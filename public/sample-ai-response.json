@@ -1,0 +1,84 @@
+{
+  "questions": [
+    {
+      "question": "What is the primary goal of formative assessment?",
+      "options": [
+        "To rank students against each other",
+        "To provide feedback during learning",
+        "To assign final grades only",
+        "To replace classroom instruction"
+      ],
+      "correctAnswer": "To provide feedback during learning",
+      "explanation": "The source states that formative assessment is used during instruction to guide improvement.",
+      "source": {
+        "file": "Education_Handbook.pdf",
+        "page": "14",
+        "chunkId": "education-handbook-p14-c2"
+      }
+    },
+    {
+      "question": "Which statement best describes photosynthesis?",
+      "options": [
+        "It converts glucose into oxygen",
+        "It converts light energy into chemical energy",
+        "It only occurs in animal cells",
+        "It is a process of DNA replication"
+      ],
+      "correctAnswer": "It converts light energy into chemical energy",
+      "explanation": "The source packet describes photosynthesis as using light energy to synthesize sugars.",
+      "source": {
+        "file": "Biology_Basics.pdf",
+        "page": "22",
+        "chunkId": "biology-basics-p22-c1"
+      }
+    },
+    {
+      "question": "What does GDP measure?",
+      "options": [
+        "Total government debt",
+        "Total value of goods and services produced domestically",
+        "Average household savings",
+        "Annual stock market growth only"
+      ],
+      "correctAnswer": "Total value of goods and services produced domestically",
+      "explanation": "The economics source defines GDP as the domestic production value over a period.",
+      "source": {
+        "file": "Macroeconomics_Intro.pdf",
+        "page": "9",
+        "chunkId": "macroeconomics-intro-p9-c1"
+      }
+    },
+    {
+      "question": "What is one key benefit of version control systems?",
+      "options": [
+        "They prevent all software bugs",
+        "They eliminate the need for testing",
+        "They track and manage code changes over time",
+        "They compile source code automatically"
+      ],
+      "correctAnswer": "They track and manage code changes over time",
+      "explanation": "The software engineering material explains version control as change tracking with collaboration support.",
+      "source": {
+        "file": "Software_Engineering_Notes.pdf",
+        "page": "5",
+        "chunkId": "software-engineering-notes-p5-c3"
+      }
+    },
+    {
+      "question": "In project risk management, what is mitigation?",
+      "options": [
+        "Ignoring low-probability risks",
+        "Transferring all risk to vendors",
+        "Taking actions to reduce risk likelihood or impact",
+        "Documenting risks after project closure"
+      ],
+      "correctAnswer": "Taking actions to reduce risk likelihood or impact",
+      "explanation": "The source defines mitigation as proactive actions that lower risk probability or severity.",
+      "source": {
+        "file": "Project_Management_Guide.pdf",
+        "page": "31",
+        "chunkId": "project-management-guide-p31-c2"
+      }
+    }
+  ]
+}

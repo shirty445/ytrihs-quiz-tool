@@ -1,0 +1,151 @@
+# PDF Quiz Prompt Builder (No Direct AI API Integration)
+
+This is a Next.js + TypeScript MVP web app that turns uploaded PDFs into **one master prompt** for external AI tools (ChatGPT, Claude, Gemini, etc.), then validates/parses returned JSON into a usable editable quiz.
+
+The app does **not** require OpenAI keys and does **not** call any LLM API directly.
+
+## What It Does
+
+1. Upload one or many PDFs by file picker or drag-and-drop (supports large batches, including 30+ files).
+2. Extract text from each PDF independently.
+3. Chunk, deduplicate, and compress source text into a prompt-safe source packet.
+4. Generate strict external-AI prompts from the processed source packet.
+5. Split larger jobs into multiple prompt-safe batches when needed.
+6. Let user choose prompt density, questions per prompt, and optional compact response mode.
+7. Let user paste each AI JSON batch output back into the app.
+8. Auto-rebalance correct answer positions so the final quiz is not stuck on one option slot.
+9. Merge, deduplicate, and validate the growing quiz bank.
+10. Export quiz as JSON, CSV, or standalone HTML.
+
+## Tech Stack
+
+- Next.js (App Router)
+- TypeScript
+- `pdfjs-dist` for PDF text extraction
+- `zod` for strict JSON/schema validation
+
+## Project Structure
+
+```text
+app/
+  globals.css
+  layout.tsx
+  page.tsx
+components/
+  file-status-list.tsx
+  quiz-builder-app.tsx
+  quiz-editor.tsx
+  stage-indicator.tsx
+lib/
+  types.ts
+  pdf/
+    extract.ts
+    process-pdfs.ts
+  prompt/
+    build-master-prompt.ts
+  quiz/
+    export.ts
+    html.ts
+    parse.ts
+    schema.ts
+  text/
+    chunking.ts
+    compression.ts
+public/
+  sample-ai-response.json
+```
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Start dev server:
+
+```bash
+npm run dev
+```
+
+3. Open:
+
+```text
+http://localhost:3000
+```
+
+## External-AI Workflow
+
+Inside the app:
+
+1. Upload PDFs and set difficulty/topic focus.
+2. Choose a target question count.
+3. Choose prompt mode, questions per prompt, and optional compact response format.
+4. Click **Generate Prompt Queue**.
+5. Copy the current prompt batch.
+6. Paste it into your preferred AI model.
+7. Paste that batch response into this app and parse it.
+8. If the model returns too few or too many questions, the app advises moving to a lighter mode.
+9. Repeat until the queue is complete.
+10. Edit questions if needed.
+11. Export JSON, CSV, or standalone HTML.
+
+## Required AI JSON Shape
+
+The parser expects this strict format:
+
+```json
+{
+  "questions": [
+    {
+      "question": "string",
+      "options": ["A", "B", "C", "D"],
+      "correctAnswer": "string",
+      "explanation": "string",
+      "source": {
+        "file": "string",
+        "page": "string",
+        "chunkId": "string"
+      }
+    }
+  ]
+}
+```
+
+Validation rules:
+
+- At least 1 question.
+- Exactly 4 options per question.
+- `correctAnswer` must match one of the 4 options.
+- `explanation` required.
+- `source.file`, `source.page`, `source.chunkId` required.
+- If page is unknown, it should be `"unknown"` but chunkId must still exist.
+
+The app now uses a prompt queue for larger runs. Each batch prompt requests a bounded number of questions so the AI response does not get cut off by output limits.
+
+Compact response mode is implemented as an isolated parser/prompt feature so it can be removed later without changing the main quiz data model.
+
+## Reliability and Scale Strategy
+
+- Per-file independent extraction so one bad PDF does not crash the run.
+- Retries for extraction failures.
+- Warning for low/no extractable text.
+- Chunking with overlap for large sources.
+- Heuristic compression and scoring.
+- Dedupe within file and globally.
+- Prompt-safe caps (chunk and character budgets) to avoid giant unusable prompts.
+- Coverage-first chunk selection so multiple files stay represented.
+
+## Notes
+
+- This app is optimized for normal text-based PDFs.
+- Scanned/image-only PDFs may produce little or no text unless OCR was already embedded.
+- No direct LLM integration is present by design.
+- The standalone HTML export opens directly in browsers and includes a front-page question index plus a one-question-at-a-time quiz mode.
+- The review editor is collapsed by default so the main workflow stays lighter unless you want to manually revise the merged quiz.
+- Correct answer positions are rebalanced after parsing so the final quiz is not overly biased toward one option letter.
+
+## Optional Test Payload
+
+Use `public/sample-ai-response.json` as a known-valid response example.

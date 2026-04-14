@@ -1,0 +1,117 @@
+import { normalizeQuestionsPerPrompt } from "@/lib/prompt/modes";
+import type { PromptBatch, PromptDensity, ResponseFormat, SourceChunk } from "@/lib/types";
+
+interface MutablePromptBatch {
+  chunks: SourceChunk[];
+  estimatedChars: number;
+  questionCount: number;
+}
+
+function emptyBatch(): MutablePromptBatch {
+  return {
+    chunks: [],
+    estimatedChars: 0,
+    questionCount: 0
+  };
+}
+
+function uniqueSourceFiles(chunks: SourceChunk[]): string[] {
+  return Array.from(new Set(chunks.map((chunk) => chunk.fileName)));
+}
+
+function sourceCharBudgetPerPrompt(input: {
+  questionsPerPrompt: number;
+  promptDensity: PromptDensity;
+  responseFormat: ResponseFormat;
+}): number {
+  const normalizedQuestionsPerPrompt = normalizeQuestionsPerPrompt(input.questionsPerPrompt);
+  const baseBudget = 6500;
+  const questionMultiplier = Math.min(3.2, Math.max(0.9, 0.6 + normalizedQuestionsPerPrompt / 10));
+  const densityMultiplier =
+    input.promptDensity === "light" ? 0.85 : input.promptDensity === "dense" ? 1.2 : 1;
+  const responseFormatMultiplier = input.responseFormat === "compact" ? 1.35 : 1;
+
+  return Math.round(baseBudget * questionMultiplier * densityMultiplier * responseFormatMultiplier);
+}
+
+function distributeChunks(chunks: SourceChunk[], promptCount: number): MutablePromptBatch[] {
+  const buckets = Array.from({ length: promptCount }, () => emptyBatch());
+
+  for (const chunk of chunks) {
+    let lightestIndex = 0;
+    for (let index = 1; index < buckets.length; index += 1) {
+      if (buckets[index].estimatedChars < buckets[lightestIndex].estimatedChars) {
+        lightestIndex = index;
+      }
+    }
+
+    buckets[lightestIndex].chunks.push(chunk);
+    buckets[lightestIndex].estimatedChars += chunk.compressedText.length;
+  }
+
+  return buckets;
+}
+
+function maxEstimatedChars(buckets: MutablePromptBatch[]): number {
+  return buckets.reduce((maxChars, bucket) => Math.max(maxChars, bucket.estimatedChars), 0);
+}
+
+export function buildPromptBatches(
+  chunks: SourceChunk[],
+  targetQuestionCount: number,
+  options: {
+    questionsPerPrompt: number;
+    promptDensity: PromptDensity;
+    responseFormat: ResponseFormat;
+  }
+): PromptBatch[] {
+  if (chunks.length === 0 || targetQuestionCount <= 0) {
+    return [];
+  }
+
+  const normalizedQuestionsPerPrompt = normalizeQuestionsPerPrompt(options.questionsPerPrompt);
+  const promptCountByQuestions = Math.ceil(targetQuestionCount / normalizedQuestionsPerPrompt);
+  const maxSourceCharsPerPrompt = sourceCharBudgetPerPrompt(options);
+  let promptCount = Math.max(1, promptCountByQuestions);
+  let buckets = distributeChunks(chunks, promptCount);
+
+  while (promptCount < chunks.length && maxEstimatedChars(buckets) > maxSourceCharsPerPrompt) {
+    promptCount += 1;
+    buckets = distributeChunks(chunks, promptCount);
+  }
+
+  const usedBuckets = buckets.filter((bucket) => bucket.chunks.length > 0);
+  let remainingQuestions = targetQuestionCount;
+
+  while (remainingQuestions > 0) {
+    let allocatedThisPass = false;
+    for (const bucket of usedBuckets) {
+      if (remainingQuestions === 0) {
+        break;
+      }
+      if (bucket.questionCount >= normalizedQuestionsPerPrompt) {
+        continue;
+      }
+
+      bucket.questionCount += 1;
+      remainingQuestions -= 1;
+      allocatedThisPass = true;
+    }
+
+    if (!allocatedThisPass) {
+      break;
+    }
+  }
+
+  return usedBuckets
+    .filter((bucket) => bucket.questionCount > 0)
+    .map((bucket, index) => ({
+      id: `prompt-batch-${index + 1}`,
+      batchNumber: index + 1,
+      questionCount: bucket.questionCount,
+      chunkCount: bucket.chunks.length,
+      estimatedChars: bucket.estimatedChars,
+      sourceFiles: uniqueSourceFiles(bucket.chunks),
+      chunks: bucket.chunks
+    }));
+}
