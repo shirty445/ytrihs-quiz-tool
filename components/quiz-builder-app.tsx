@@ -6,7 +6,6 @@ import { QuizEditor } from "@/components/quiz-editor";
 import { StageIndicator } from "@/components/stage-indicator";
 import { processPdfBatch } from "@/lib/pdf/process-pdfs";
 import {
-  buildPromptFailureAdvice,
   normalizeQuestionsPerPrompt,
   PROMPT_DENSITY_PRESETS,
   QUESTIONS_PER_PROMPT_OPTIONS
@@ -31,7 +30,7 @@ import type {
   ResponseFormat
 } from "@/lib/types";
 
-const QUESTION_COUNT_OPTIONS = [5, 10, 25, 50, 100];
+const QUESTION_COUNT_OPTIONS = [5, 10, 25, 50, 100, 200, 300];
 
 const DEFAULT_SETTINGS: QuizSettings = {
   difficulty: "medium",
@@ -349,24 +348,19 @@ export function QuizBuilderApp() {
       return;
     }
 
-    if (parsed.data.questions.length !== currentBatch.questionCount) {
-      setStage("waiting_for_ai");
-      setValidationErrors([
-        `Prompt ${currentBatch.batchNumber} expects exactly ${currentBatch.questionCount} questions, but received ${parsed.data.questions.length}.`,
-        buildPromptFailureAdvice({
-          expectedCount: currentBatch.questionCount,
-          actualCount: parsed.data.questions.length,
-          promptDensity: settings.promptDensity,
-          questionsPerPrompt: settings.questionsPerPrompt,
-          responseFormat: settings.responseFormat
-        })
-      ]);
-      return;
-    }
-
+    const parsedQuestionCount = parsed.data.questions.length;
     const rebalanced = rebalanceAnswerPositions(parsed.data, quiz?.questions.length ?? 0);
     const mergeResult = mergeQuizPayload(quiz, rebalanced.quiz);
     const qualityNotes: string[] = [];
+    const countDifference = parsedQuestionCount - currentBatch.questionCount;
+
+    if (countDifference !== 0) {
+      qualityNotes.push(
+        countDifference > 0
+          ? `Accepted ${parsedQuestionCount} questions for a target of ${currentBatch.questionCount} (${countDifference} over target).`
+          : `Accepted ${parsedQuestionCount} questions for a target of ${currentBatch.questionCount} (${Math.abs(countDifference)} under target).`
+      );
+    }
 
     if (rebalanced.report.skewDetected) {
       qualityNotes.push("Detected answer-position skew and redistributed correct options across A-D.");
@@ -394,7 +388,7 @@ export function QuizBuilderApp() {
     setPromptBatches(updatedBatches);
     setValidationErrors([]);
     setBatchMessage(
-      `Prompt ${currentBatch.batchNumber} added ${mergeResult.addedCount} question${mergeResult.addedCount === 1 ? "" : "s"}${mergeResult.duplicateCount > 0 ? ` and skipped ${mergeResult.duplicateCount} duplicate${mergeResult.duplicateCount === 1 ? "" : "s"}` : ""}.${qualityNotes.length > 0 ? ` ${qualityNotes.join(" ")}` : ""}`
+      `Prompt ${currentBatch.batchNumber} accepted ${parsedQuestionCount} question${parsedQuestionCount === 1 ? "" : "s"} for a target of ${currentBatch.questionCount} and added ${mergeResult.addedCount} question${mergeResult.addedCount === 1 ? "" : "s"}${mergeResult.duplicateCount > 0 ? ` while skipping ${mergeResult.duplicateCount} duplicate${mergeResult.duplicateCount === 1 ? "" : "s"}` : ""}.${qualityNotes.length > 0 ? ` ${qualityNotes.join(" ")}` : ""}`
     );
 
     const nextIndex = nextPendingBatchIndex(updatedBatches);
@@ -441,8 +435,7 @@ export function QuizBuilderApp() {
   return (
     <main className="page">
       <section className="hero">
-        <p className="hero-kicker">External AI workflow</p>
-        <h1>Quiz Atelier</h1>
+        <h1>shirty's quiz tool</h1>
         <p className="hero-subtitle">
           Turn PDFs into a prompt queue, auto-balance answer positions after parsing, and keep denser prompt features
           modular enough to remove later if needed.
@@ -703,7 +696,7 @@ export function QuizBuilderApp() {
                   {batch.status === "parsed" ? "(parsed)" : index === currentBatchIndex ? "(current)" : "(queued)"}
                 </strong>
                 <span>
-                  {batch.questionCount} questions | {batch.chunkCount} chunks | {batch.sourceFiles.length} files
+                  Target {batch.questionCount} questions | {batch.chunkCount} chunks | {batch.sourceFiles.length} files
                 </span>
                 {batch.status === "parsed" ? (
                   <>
@@ -725,8 +718,8 @@ export function QuizBuilderApp() {
         {currentBatch ? (
           <>
             <p className="muted">
-              Current prompt: {currentBatch.batchNumber} of {promptBatches.length}. This batch expects exactly{" "}
-              {currentBatch.questionCount} questions. Format:{" "}
+              Current prompt: {currentBatch.batchNumber} of {promptBatches.length}. This batch targets about{" "}
+              {currentBatch.questionCount} questions, but valid under or over counts are accepted. Format:{" "}
               {settings.responseFormat === "compact" ? "compact JSON" : "standard JSON"}.
             </p>
             <div className="actions-row">
@@ -753,8 +746,9 @@ export function QuizBuilderApp() {
         <h2>6) Paste Current Batch Response</h2>
         {currentBatch ? (
           <p className="muted">
-            Prompt {currentBatch.batchNumber} expects exactly {currentBatch.questionCount} questions in{" "}
-            {settings.responseFormat === "compact" ? "compact" : "standard"} JSON.
+            Prompt {currentBatch.batchNumber} targets about {currentBatch.questionCount} questions in{" "}
+            {settings.responseFormat === "compact" ? "compact" : "standard"} JSON. Any valid question count is
+            accepted.
           </p>
         ) : (
           <p className="muted">No pending prompt remains. You can export the merged quiz below.</p>
@@ -832,7 +826,7 @@ export function QuizBuilderApp() {
                 onClick={() =>
                   downloadFile(
                     buildHtmlFileName(quiz.questions.length),
-                    quizToHtml(quiz, "Interactive Quiz Export"),
+                    quizToHtml(quiz, "made using ytrihs's quiz tool"),
                     "text/html"
                   )
                 }

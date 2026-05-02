@@ -111,6 +111,29 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       flex-wrap: wrap;
     }
 
+    .sound-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .sound-label {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .sound-select {
+      appearance: none;
+      background: #000000;
+      color: var(--text);
+      border: 1px solid var(--line);
+      padding: 10px 14px;
+      font: inherit;
+      min-width: 220px;
+    }
+
     button {
       appearance: none;
       background: #000000;
@@ -279,6 +302,15 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       .toolbar {
         padding: 14px;
       }
+
+      .sound-controls {
+        width: 100%;
+      }
+
+      .sound-select {
+        min-width: 0;
+        flex: 1 1 220px;
+      }
     }
   </style>
 </head>
@@ -293,6 +325,16 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     <div class="toolbar">
       <div class="toolbar-copy" id="toolbarCopy">Question index view</div>
       <div class="toolbar-actions">
+        <div class="sound-controls">
+          <label class="sound-label" for="correctSoundSelect">Correct sound</label>
+          <select class="sound-select" id="correctSoundSelect">
+            <option value="marioCoin">Mario-style Coin</option>
+            <option value="sonicRing">Sonic-style Ring</option>
+            <option value="zeldaSecret">Zelda-style Secret</option>
+            <option value="oofSound">Oof</option>
+          </select>
+          <button class="nav-button" id="previewSoundButton" type="button">Preview sound</button>
+        </div>
         <button class="nav-button" id="indexButton" type="button">Question index</button>
         <button class="nav-button" id="restartButton" type="button">Restart from first</button>
       </div>
@@ -348,9 +390,264 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const returnButton = document.getElementById("returnButton");
     const indexButton = document.getElementById("indexButton");
     const restartButton = document.getElementById("restartButton");
+    const correctSoundSelect = document.getElementById("correctSoundSelect");
+    const previewSoundButton = document.getElementById("previewSoundButton");
 
     let currentIndex = 0;
     const answers = new Map();
+    let audioCtx;
+    let master;
+    const SOUND_STORAGE_KEY = "quiz-export-correct-sound";
+
+    function loadSavedSound() {
+      try {
+        return window.localStorage.getItem(SOUND_STORAGE_KEY);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function saveSoundSelection(value) {
+      try {
+        window.localStorage.setItem(SOUND_STORAGE_KEY, value);
+      } catch (error) {
+        return;
+      }
+    }
+
+    if (correctSoundSelect) {
+      correctSoundSelect.value = loadSavedSound() || "zeldaSecret";
+    }
+
+    function getAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        master = audioCtx.createGain();
+        master.gain.value = 0.75;
+
+        const compressor = audioCtx.createDynamicsCompressor();
+        compressor.threshold.value = -18;
+        compressor.knee.value = 20;
+        compressor.ratio.value = 8;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.18;
+
+        master.connect(compressor);
+        compressor.connect(audioCtx.destination);
+      }
+
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+
+      return audioCtx;
+    }
+
+    function tone(freq, start, duration, config) {
+      const ctx = getAudio();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const options = config || {};
+      const type = options.type || "sine";
+      const volume = options.volume === undefined ? 0.18 : options.volume;
+      const attack = options.attack === undefined ? 0.008 : options.attack;
+      const endFreq = options.endFreq;
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now + start);
+
+      if (endFreq) {
+        osc.frequency.exponentialRampToValueAtTime(endFreq, now + start + duration);
+      }
+
+      gain.gain.setValueAtTime(0.0001, now + start);
+      gain.gain.exponentialRampToValueAtTime(volume, now + start + attack);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+
+      osc.connect(gain);
+      gain.connect(master);
+
+      osc.start(now + start);
+      osc.stop(now + start + duration + 0.02);
+    }
+
+    function bell(freq, start, duration, volume) {
+      const baseVolume = volume === undefined ? 0.13 : volume;
+
+      tone(freq, start, duration, {
+        type: "sine",
+        volume: baseVolume
+      });
+
+      tone(freq * 2.01, start, duration * 0.65, {
+        type: "sine",
+        volume: baseVolume * 0.35
+      });
+
+      tone(freq * 3.02, start + 0.005, duration * 0.45, {
+        type: "sine",
+        volume: baseVolume * 0.18
+      });
+    }
+
+    function noiseBurst(start, duration, volume, filterFreq) {
+      const ctx = getAudio();
+      const now = ctx.currentTime;
+      const peakVolume = volume === undefined ? 0.08 : volume;
+      const cutoff = filterFreq === undefined ? 3000 : filterFreq;
+      const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let index = 0; index < bufferSize; index += 1) {
+        data[index] = Math.random() * 2 - 1;
+      }
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = "highpass";
+      filter.frequency.value = cutoff;
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now + start);
+      gain.gain.exponentialRampToValueAtTime(peakVolume, now + start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(master);
+
+      noise.start(now + start);
+      noise.stop(now + start + duration);
+    }
+
+    function marioCoin() {
+      getAudio();
+
+      tone(987.77, 0.0, 0.07, {
+        type: "square",
+        volume: 0.13
+      });
+
+      tone(1318.51, 0.06, 0.13, {
+        type: "square",
+        volume: 0.15
+      });
+
+      tone(2637.02, 0.13, 0.07, {
+        type: "sine",
+        volume: 0.045
+      });
+    }
+
+    function sonicRing() {
+      getAudio();
+
+      bell(1567.98, 0.0, 0.2, 0.11);
+      bell(2093.0, 0.025, 0.18, 0.075);
+
+      tone(1200, 0.0, 0.16, {
+        type: "triangle",
+        volume: 0.08,
+        endFreq: 2100
+      });
+
+      noiseBurst(0.035, 0.06, 0.035, 4500);
+    }
+
+    function zeldaSecret() {
+      getAudio();
+
+      bell(523.25, 0.0, 0.22, 0.09);
+      bell(659.25, 0.13, 0.22, 0.09);
+      bell(783.99, 0.26, 0.24, 0.095);
+      bell(1046.5, 0.42, 0.38, 0.12);
+
+      tone(1318.51, 0.58, 0.22, {
+        type: "sine",
+        volume: 0.055
+      });
+
+      tone(1567.98, 0.66, 0.24, {
+        type: "sine",
+        volume: 0.045
+      });
+
+      noiseBurst(0.5, 0.2, 0.025, 5000);
+    }
+
+    function oofSound() {
+      const ctx = getAudio();
+      const now = ctx.currentTime;
+
+      tone(95, 0.0, 0.24, {
+        type: "sine",
+        volume: 0.24,
+        endFreq: 48
+      });
+
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(125, now);
+      osc.frequency.exponentialRampToValueAtTime(72, now + 0.32);
+
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, now);
+      amp.gain.exponentialRampToValueAtTime(0.16, now + 0.025);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+
+      const formant1 = ctx.createBiquadFilter();
+      formant1.type = "bandpass";
+      formant1.frequency.value = 430;
+      formant1.Q.value = 5;
+
+      const formant2 = ctx.createBiquadFilter();
+      formant2.type = "bandpass";
+      formant2.frequency.value = 900;
+      formant2.Q.value = 4;
+
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = 1400;
+
+      const g1 = ctx.createGain();
+      g1.gain.value = 0.9;
+
+      const g2 = ctx.createGain();
+      g2.gain.value = 0.35;
+
+      osc.connect(amp);
+      amp.connect(formant1);
+      amp.connect(formant2);
+      amp.connect(lowpass);
+      formant1.connect(g1);
+      formant2.connect(g2);
+      g1.connect(master);
+      g2.connect(master);
+      lowpass.connect(master);
+
+      osc.start(now);
+      osc.stop(now + 0.36);
+
+      noiseBurst(0.22, 0.12, 0.025, 1000);
+    }
+
+    const correctSounds = {
+      marioCoin,
+      sonicRing,
+      zeldaSecret,
+      oofSound
+    };
+
+    function playSelectedCorrectSound() {
+      const soundKey = correctSoundSelect ? correctSoundSelect.value : "marioCoin";
+      const selectedSound = correctSounds[soundKey] || marioCoin;
+      selectedSound();
+    }
 
     function showView(view) {
       indexView.classList.toggle("active", view === "index");
@@ -415,10 +712,14 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           }
         } else {
           optionButton.addEventListener("click", () => {
+            const isCorrect = option === question.correctAnswer;
             answers.set(currentIndex, {
               selected: option,
-              correct: option === question.correctAnswer
+              correct: isCorrect
             });
+            if (isCorrect) {
+              playSelectedCorrectSound();
+            }
             renderIndex();
             renderQuestion();
           });
@@ -456,6 +757,18 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       renderQuestion();
       showView("quiz");
     });
+
+    if (correctSoundSelect) {
+      correctSoundSelect.addEventListener("change", () => {
+        saveSoundSelection(correctSoundSelect.value);
+      });
+    }
+
+    if (previewSoundButton) {
+      previewSoundButton.addEventListener("click", () => {
+        playSelectedCorrectSound();
+      });
+    }
 
     renderIndex();
   </script>

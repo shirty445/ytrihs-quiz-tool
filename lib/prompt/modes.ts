@@ -21,14 +21,14 @@ export const PROMPT_DENSITY_PRESETS: Record<
   }
 };
 
-export const QUESTIONS_PER_PROMPT_OPTIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40];
+export const QUESTIONS_PER_PROMPT_OPTIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 75, 100];
 
 export function normalizeQuestionsPerPrompt(value: number): number {
   if (!Number.isFinite(value)) {
     return PROMPT_DENSITY_PRESETS.standard.questionsPerPrompt;
   }
 
-  return Math.max(1, Math.min(40, Math.round(value)));
+  return Math.max(1, Math.min(100, Math.round(value)));
 }
 
 function lighterDensity(mode: PromptDensity): PromptDensity {

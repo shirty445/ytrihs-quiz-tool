@@ -93,7 +93,7 @@ export function buildMasterPrompt({
   return `You are a strict quiz-generation engine.
 
 TASK
-- Generate exactly ${questionCount} multiple-choice questions (MCQs), no more and no less.
+- Target about ${questionCount} multiple-choice questions (MCQs). A slightly lower or higher count is acceptable if it improves source-grounded quality.
 - Difficulty target: ${formatDifficulty(difficulty)}.
 - ${focusInstruction}
 ${batchInstruction}
@@ -102,7 +102,7 @@ HARD CONSTRAINTS
 1) Use ONLY facts that are explicitly present in SOURCE_PACKET. Do not infer facts that are not stated.
 2) Return JSON only. Do not use Markdown, code fences, commentary, or additional keys.
 3) Output must match the schema exactly.
-4) The "questions" array must contain exactly ${questionCount} items.
+4) Aim for roughly ${questionCount} items in the "questions" array.
 5) Each question must contain exactly 4 options.
 6) "correctAnswer" must exactly match one of the 4 options.
 7) "explanation" must be concise and must reference why the correct option is supported by source text.
@@ -116,7 +116,7 @@ REQUIRED JSON SCHEMA
 ${requiredSchema}
 
 QUALITY CHECK BEFORE YOU RETURN
-- Verify there are exactly ${questionCount} questions.
+- Verify the response stays reasonably close to the target of ${questionCount} questions.
 - Verify every question has 4 options.
 - Verify ${responseFormat === "compact" ? "each correctIndex points to the intended correct option." : "each correctAnswer equals one of that question's options."}
 - Verify each question includes source.file, source.page, and source.chunkId${responseFormat === "compact" ? " in the compact tuple." : "."}

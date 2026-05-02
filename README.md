@@ -1,4 +1,4 @@
-# PDF Quiz Prompt Builder (No Direct AI API Integration)
+# shirty's quiz tool (No Direct AI API Integration)
 
 This is a Next.js + TypeScript MVP web app that turns uploaded PDFs into **one master prompt** for external AI tools (ChatGPT, Claude, Gemini, etc.), then validates/parses returned JSON into a usable editable quiz.
 

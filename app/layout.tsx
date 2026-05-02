@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PDF Quiz Prompt Builder",
+  title: "shirty's quiz tool",
   description:
     "Generate robust external-AI quiz prompts from PDFs, then validate and edit returned JSON quizzes."
 };
