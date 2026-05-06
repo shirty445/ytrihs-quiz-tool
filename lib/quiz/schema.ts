@@ -9,26 +9,30 @@ const SourceSchema = z.object({
   chunkId: z.string().min(1, "source.chunkId is required")
 });
 
-const QuestionSchema = z
-  .object({
-    question: z.string().min(1, "question is required"),
-    options: z.array(z.string().min(1, "options cannot be empty")).length(4, "each question needs 4 options"),
-    correctAnswer: z.string().min(1, "correctAnswer is required"),
-    explanation: z.string().min(1, "explanation is required"),
-    source: SourceSchema
-  })
-  .superRefine((value, ctx) => {
-    if (!value.options.includes(value.correctAnswer)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["correctAnswer"],
-        message: "correctAnswer must match one of the options"
-      });
-    }
+export function createQuizSchema(optionCount: number) {
+  const QuestionSchema = z
+    .object({
+      question: z.string().min(1, "question is required"),
+      options: z
+        .array(z.string().min(1, "options cannot be empty"))
+        .length(optionCount, `each question needs ${optionCount} options`),
+      correctAnswer: z.string().min(1, "correctAnswer is required"),
+      explanation: z.string().min(1, "explanation is required"),
+      source: SourceSchema
+    })
+    .superRefine((value, ctx) => {
+      if (!value.options.includes(value.correctAnswer)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["correctAnswer"],
+          message: "correctAnswer must match one of the options"
+        });
+      }
+    });
+
+  return z.object({
+    questions: z.array(QuestionSchema).min(1, "questions must contain at least 1 item")
   });
+}
 
-export const QuizSchema = z.object({
-  questions: z.array(QuestionSchema).min(1, "questions must contain at least 1 item")
-});
-
-export type QuizSchemaType = z.infer<typeof QuizSchema>;
+export type QuizSchemaType = z.infer<ReturnType<typeof createQuizSchema>>;

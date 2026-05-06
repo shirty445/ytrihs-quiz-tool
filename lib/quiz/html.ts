@@ -1,4 +1,5 @@
 import type { QuizPayload } from "@/lib/types";
+import { describeAnswerChoiceCounts } from "@/lib/quiz/options";
 
 function escapeHtml(value: string): string {
   return value
@@ -16,10 +17,23 @@ function safeJson(payload: QuizPayload): string {
     .replace(/&/g, "\\u0026");
 }
 
+function hashString(value: string): string {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
 export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): string {
   const questionCount = payload.questions.length;
   const escapedTitle = escapeHtml(title);
   const serializedQuiz = safeJson(payload);
+  const answerChoiceCopy = escapeHtml(describeAnswerChoiceCounts(payload));
+  const quizStateStorageKey = `quiz-export-state-${hashString(`${title}|${JSON.stringify(payload)}`)}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -95,33 +109,49 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       display: flex;
       gap: 14px;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
+      flex-wrap: nowrap;
       padding: 16px 18px;
       margin-bottom: 24px;
       background: #000000;
+      overflow-x: auto;
     }
 
     .toolbar-copy {
       font-size: 0.92rem;
+      white-space: nowrap;
+      flex: 0 0 auto;
     }
 
     .toolbar-actions {
       display: flex;
       gap: 10px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      align-items: center;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+
+    .toolbar-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: nowrap;
+      flex: 0 0 auto;
     }
 
     .sound-controls {
       display: flex;
       align-items: center;
       gap: 10px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      flex: 0 0 auto;
     }
 
     .sound-label {
       font-size: 0.78rem;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      white-space: nowrap;
     }
 
     .sound-select {
@@ -210,6 +240,15 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       font-size: 0.84rem;
     }
 
+    .question-row em {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.82rem;
+      font-style: normal;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
     .question-row.correct {
       background: #ffffff;
       color: #000000;
@@ -289,6 +328,59 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       font-size: 0.82rem;
     }
 
+    .miss-mark-panel {
+      display: none;
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .miss-mark-panel.active {
+      display: block;
+    }
+
+    .miss-mark-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .miss-mark-title {
+      margin: 0 0 6px;
+      font-size: 0.86rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .miss-mark-copy {
+      margin: 0;
+      line-height: 1.65;
+      font-size: 0.88rem;
+    }
+
+    .miss-mark-list {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .miss-mark-chip {
+      min-width: 44px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .empty-state {
+      margin: 0;
+      line-height: 1.7;
+    }
+
     @media (max-width: 720px) {
       .shell {
         width: min(100% - 20px, 1080px);
@@ -304,12 +396,12 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       }
 
       .sound-controls {
-        width: 100%;
+        width: auto;
       }
 
       .sound-select {
         min-width: 0;
-        flex: 1 1 220px;
+        flex: 0 0 220px;
       }
     }
   </style>
@@ -335,8 +427,11 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           </select>
           <button class="nav-button" id="previewSoundButton" type="button">Preview sound</button>
         </div>
-        <button class="nav-button" id="indexButton" type="button">Question index</button>
-        <button class="nav-button" id="restartButton" type="button">Restart from first</button>
+        <div class="toolbar-group">
+          <button class="nav-button" id="indexButton" type="button">Question index</button>
+          <button class="nav-button" id="missedButton" type="button">Missed questions (0)</button>
+          <button class="nav-button" id="restartButton" type="button">Restart from first</button>
+        </div>
       </div>
     </div>
 
@@ -344,10 +439,22 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       <div class="card">
         <ul class="stats">
           <li>${questionCount} total question${questionCount === 1 ? "" : "s"}</li>
-          <li>4 answer choices each</li>
+          <li>${answerChoiceCopy}</li>
           <li>Browser-openable HTML</li>
         </ul>
         <div class="question-list" id="questionList"></div>
+      </div>
+    </section>
+
+    <section class="view" id="missedView">
+      <div class="card">
+        <ul class="stats">
+          <li id="missedTotalStat">0 missed questions recorded</li>
+          <li id="missedPendingStat">0 still need retry</li>
+          <li id="missedCorrectedStat">0 corrected after retry</li>
+        </ul>
+        <p class="empty-state" id="missedEmpty">Questions you get wrong will appear here so you can revisit them later.</p>
+        <div class="question-list" id="missedQuestionList"></div>
       </div>
     </section>
 
@@ -363,8 +470,19 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           <p><strong>Explanation:</strong> <span id="explanationText"></span></p>
           <p><strong>Source:</strong> <span id="sourceText"></span></p>
         </div>
+        <div class="miss-mark-panel" id="missMarkPanel">
+          <div class="miss-mark-header">
+            <div>
+              <p class="miss-mark-title">Miss marks</p>
+              <p class="miss-mark-copy" id="missMarkCopy">Each wrong answer leaves an X. Click any X to remove it.</p>
+            </div>
+            <button class="nav-button" id="clearMarksButton" type="button">Clear all Xs</button>
+          </div>
+          <div class="miss-mark-list" id="missMarkList"></div>
+        </div>
         <div class="quiz-actions">
           <button class="nav-button" id="nextButton" type="button">Next question</button>
+          <button class="nav-button" id="retryButton" type="button">Retry question</button>
           <button class="nav-button" id="returnButton" type="button">Back to index</button>
         </div>
         <p class="footer-note">This quiz file was generated from structured JSON and works offline once opened.</p>
@@ -377,6 +495,7 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const payload = JSON.parse(document.getElementById("quiz-data").textContent || '{"questions":[]}');
     const questionList = document.getElementById("questionList");
     const indexView = document.getElementById("indexView");
+    const missedView = document.getElementById("missedView");
     const quizView = document.getElementById("quizView");
     const toolbarCopy = document.getElementById("toolbarCopy");
     const progressLabel = document.getElementById("progressLabel");
@@ -386,17 +505,32 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const feedback = document.getElementById("feedback");
     const explanationText = document.getElementById("explanationText");
     const sourceText = document.getElementById("sourceText");
+    const missMarkPanel = document.getElementById("missMarkPanel");
+    const missMarkCopy = document.getElementById("missMarkCopy");
+    const missMarkList = document.getElementById("missMarkList");
+    const clearMarksButton = document.getElementById("clearMarksButton");
     const nextButton = document.getElementById("nextButton");
+    const retryButton = document.getElementById("retryButton");
     const returnButton = document.getElementById("returnButton");
     const indexButton = document.getElementById("indexButton");
+    const missedButton = document.getElementById("missedButton");
     const restartButton = document.getElementById("restartButton");
+    const missedQuestionList = document.getElementById("missedQuestionList");
+    const missedEmpty = document.getElementById("missedEmpty");
+    const missedTotalStat = document.getElementById("missedTotalStat");
+    const missedPendingStat = document.getElementById("missedPendingStat");
+    const missedCorrectedStat = document.getElementById("missedCorrectedStat");
     const correctSoundSelect = document.getElementById("correctSoundSelect");
     const previewSoundButton = document.getElementById("previewSoundButton");
 
     let currentIndex = 0;
     const answers = new Map();
+    const missMarks = new Map();
+    const retryQueue = new Set();
+    let navigationMode = "all";
     let audioCtx;
     let master;
+    const QUIZ_STATE_STORAGE_KEY = "${quizStateStorageKey}";
     const SOUND_STORAGE_KEY = "quiz-export-correct-sound";
 
     function loadSavedSound() {
@@ -415,8 +549,121 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       }
     }
 
+    function saveQuizState() {
+      try {
+        window.localStorage.setItem(
+          QUIZ_STATE_STORAGE_KEY,
+          JSON.stringify({
+            answers: Array.from(answers.entries()),
+            missMarks: Array.from(missMarks.entries())
+          })
+        );
+      } catch (error) {
+        return;
+      }
+    }
+
+    function loadQuizState() {
+      try {
+        const raw = window.localStorage.getItem(QUIZ_STATE_STORAGE_KEY);
+        if (!raw) {
+          return;
+        }
+
+        const parsed = JSON.parse(raw);
+        answers.clear();
+        missMarks.clear();
+
+        if (parsed && Array.isArray(parsed.answers)) {
+          parsed.answers.forEach((entry) => {
+            if (!Array.isArray(entry) || entry.length !== 2) {
+              return;
+            }
+
+            const index = Number(entry[0]);
+            const value = entry[1];
+
+            if (!Number.isInteger(index) || index < 0 || index >= payload.questions.length) {
+              return;
+            }
+
+            if (!value || typeof value !== "object") {
+              return;
+            }
+
+            const selected = typeof value.selected === "string" ? value.selected : "";
+            const correct = Boolean(value.correct);
+            const attempts = Number.isFinite(value.attempts)
+              ? Math.max(1, Math.round(value.attempts))
+              : 1;
+
+            if (!payload.questions[index].options.includes(selected)) {
+              return;
+            }
+
+            answers.set(index, {
+              selected,
+              correct,
+              attempts
+            });
+          });
+        }
+
+        if (parsed && Array.isArray(parsed.missMarks)) {
+          parsed.missMarks.forEach((entry) => {
+            if (!Array.isArray(entry) || entry.length !== 2) {
+              return;
+            }
+
+            const index = Number(entry[0]);
+            const count = Number(entry[1]);
+
+            if (!Number.isInteger(index) || index < 0 || index >= payload.questions.length) {
+              return;
+            }
+
+            const normalizedCount = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
+            if (normalizedCount > 0) {
+              missMarks.set(index, normalizedCount);
+            }
+          });
+        }
+      } catch (error) {
+        return;
+      }
+    }
+
     if (correctSoundSelect) {
       correctSoundSelect.value = loadSavedSound() || "zeldaSecret";
+    }
+
+    function getMissMarkCount(index) {
+      return missMarks.get(index) || 0;
+    }
+
+    function incrementMissMark(index) {
+      missMarks.set(index, getMissMarkCount(index) + 1);
+    }
+
+    function removeMissMark(index) {
+      const nextCount = getMissMarkCount(index) - 1;
+
+      if (nextCount > 0) {
+        missMarks.set(index, nextCount);
+        return;
+      }
+
+      missMarks.delete(index);
+    }
+
+    function clearMissMarks(index) {
+      missMarks.delete(index);
+    }
+
+    function missMarkPreview(count) {
+      const visibleCount = Math.min(count, 6);
+      const visibleMarks = Array.from({ length: visibleCount }, () => "X").join(" ");
+      return count > 6 ? visibleMarks + " +" + (count - 6) : visibleMarks;
     }
 
     function getAudio() {
@@ -651,8 +898,28 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
 
     function showView(view) {
       indexView.classList.toggle("active", view === "index");
+      missedView.classList.toggle("active", view === "missed");
       quizView.classList.toggle("active", view === "quiz");
-      toolbarCopy.textContent = view === "index" ? "Question index view" : "Quiz mode";
+      toolbarCopy.textContent =
+        view === "index"
+          ? "Question index view"
+          : view === "missed"
+            ? "Missed questions review"
+            : navigationMode === "missed"
+              ? "Missed-question quiz mode"
+              : "Quiz mode";
+    }
+
+    function enterRetryMode(index) {
+      retryQueue.add(index);
+    }
+
+    function exitRetryMode(index) {
+      retryQueue.delete(index);
+    }
+
+    function isRetryMode(index) {
+      return retryQueue.has(index);
     }
 
     function answerState(index) {
@@ -661,22 +928,79 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       return response.correct ? "correct" : "incorrect";
     }
 
+    function missedQuestionIndexes() {
+      return Array.from(missMarks.keys()).sort((left, right) => left - right);
+    }
+
+    function missedQuestionStatus(index) {
+      const response = answers.get(index);
+      if (!response) {
+        return "Queued for retry";
+      }
+      return response.correct ? "Corrected after retry" : "Still incorrect";
+    }
+
+    function questionStatusText(index) {
+      const markCount = getMissMarkCount(index);
+
+      if (markCount > 0) {
+        return "Miss marks: " + missMarkPreview(markCount) + " • " + missedQuestionStatus(index);
+      }
+
+      return answerState(index) === "correct"
+        ? "Answered correctly"
+        : answerState(index) === "incorrect"
+          ? "Answered incorrectly"
+          : "Not answered yet";
+    }
+
+    function pendingMissedCount() {
+      return missedQuestionIndexes().filter((index) => {
+        const response = answers.get(index);
+        return !response || !response.correct;
+      }).length;
+    }
+
+    function correctedMissedCount() {
+      return missedQuestionIndexes().filter((index) => {
+        const response = answers.get(index);
+        return Boolean(response && response.correct);
+      }).length;
+    }
+
+    function updateMissedControls() {
+      const totalMissed = missMarks.size;
+      const pendingMissed = pendingMissedCount();
+      const correctedMissed = correctedMissedCount();
+
+      missedButton.textContent = "Missed questions (" + totalMissed + ")";
+      missedButton.disabled = totalMissed === 0;
+      missedTotalStat.textContent = totalMissed + " missed question" + (totalMissed === 1 ? "" : "s") + " recorded";
+      missedPendingStat.textContent = pendingMissed + " still need retry";
+      missedCorrectedStat.textContent = correctedMissed + " corrected after retry";
+    }
+
     function renderIndex() {
       questionList.innerHTML = "";
 
       payload.questions.forEach((question, index) => {
         const button = document.createElement("button");
         const title = document.createElement("strong");
+        const status = document.createElement("em");
         const meta = document.createElement("span");
 
         button.type = "button";
         button.className = "question-row " + answerState(index);
+        status.textContent = questionStatusText(index);
         title.textContent = (index + 1) + ". " + question.question;
         meta.textContent = question.source.file + " | page " + question.source.page + " | " + question.source.chunkId;
 
+        button.appendChild(status);
         button.appendChild(title);
         button.appendChild(meta);
         button.addEventListener("click", () => {
+          navigationMode = "all";
+          exitRetryMode(index);
           currentIndex = index;
           renderQuestion();
           showView("quiz");
@@ -685,12 +1009,91 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       });
     }
 
+    function renderMissedQuestions() {
+      const missedIndexes = missedQuestionIndexes();
+      missedQuestionList.innerHTML = "";
+      missedEmpty.style.display = missedIndexes.length === 0 ? "block" : "none";
+
+      missedIndexes.forEach((index) => {
+        const question = payload.questions[index];
+        const button = document.createElement("button");
+        const status = document.createElement("em");
+        const title = document.createElement("strong");
+        const meta = document.createElement("span");
+
+        button.type = "button";
+        button.className = "question-row " + answerState(index);
+        status.textContent = questionStatusText(index);
+        title.textContent = (index + 1) + ". " + question.question;
+        meta.textContent = question.source.file + " | page " + question.source.page + " | " + question.source.chunkId;
+
+        button.appendChild(status);
+        button.appendChild(title);
+        button.appendChild(meta);
+        button.addEventListener("click", () => {
+          navigationMode = "missed";
+          enterRetryMode(index);
+          currentIndex = index;
+          renderQuestion();
+          showView("quiz");
+        });
+        missedQuestionList.appendChild(button);
+      });
+    }
+
+    function renderMissMarks() {
+      const markCount = getMissMarkCount(currentIndex);
+      missMarkList.innerHTML = "";
+
+      if (markCount <= 0) {
+        missMarkPanel.classList.remove("active");
+        return;
+      }
+
+      missMarkPanel.classList.add("active");
+      missMarkCopy.textContent =
+        "This question has " +
+        markCount +
+        " X mark" +
+        (markCount === 1 ? "" : "s") +
+        ". Click any X to remove it.";
+
+      for (let index = 0; index < markCount; index += 1) {
+        const markButton = document.createElement("button");
+        markButton.type = "button";
+        markButton.className = "miss-mark-chip";
+        markButton.textContent = "X";
+        markButton.title = "Remove this X";
+        markButton.addEventListener("click", () => {
+          removeMissMark(currentIndex);
+          saveQuizState();
+          updateMissedControls();
+          renderIndex();
+          renderMissedQuestions();
+          renderQuestion();
+        });
+        missMarkList.appendChild(markButton);
+      }
+    }
+
     function renderQuestion() {
       const question = payload.questions[currentIndex];
-      const answer = answers.get(currentIndex);
+      const storedAnswer = answers.get(currentIndex);
+      const missedIndexes = missedQuestionIndexes();
+      const missedPosition = missedIndexes.indexOf(currentIndex);
+      const isMissedReview = navigationMode === "missed" && missedPosition >= 0;
+      const answer = isRetryMode(currentIndex) ? null : storedAnswer;
 
-      progressLabel.textContent = "Question " + (currentIndex + 1) + " of " + payload.questions.length;
-      sourceLabel.textContent = question.source.file;
+      progressLabel.textContent = isMissedReview
+        ? "Missed question " + (missedPosition + 1) + " of " + missedIndexes.length
+        : "Question " + (currentIndex + 1) + " of " + payload.questions.length;
+      sourceLabel.textContent =
+        question.source.file +
+        (getMissMarkCount(currentIndex) > 0
+          ? storedAnswer && storedAnswer.correct
+            ? " | corrected review"
+            : " | missed question"
+          : "");
       questionText.textContent = question.question;
       sourceText.textContent = question.source.file + " | page " + question.source.page + " | " + question.source.chunkId;
       explanationText.textContent = question.explanation;
@@ -713,14 +1116,23 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
         } else {
           optionButton.addEventListener("click", () => {
             const isCorrect = option === question.correctAnswer;
+            const previousAnswer = answers.get(currentIndex);
+            exitRetryMode(currentIndex);
             answers.set(currentIndex, {
               selected: option,
-              correct: isCorrect
+              correct: isCorrect,
+              attempts: previousAnswer && typeof previousAnswer.attempts === "number" ? previousAnswer.attempts + 1 : 1
             });
+            if (!isCorrect) {
+              incrementMissMark(currentIndex);
+            }
             if (isCorrect) {
               playSelectedCorrectSound();
             }
+            saveQuizState();
+            updateMissedControls();
             renderIndex();
+            renderMissedQuestions();
             renderQuestion();
           });
         }
@@ -729,11 +1141,33 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       });
 
       feedback.classList.toggle("active", Boolean(answer));
-      nextButton.textContent = currentIndex < payload.questions.length - 1 ? "Next question" : "Return to index";
+      renderMissMarks();
+      nextButton.textContent = isMissedReview
+        ? missedPosition < missedIndexes.length - 1
+          ? "Next missed question"
+          : "Return to missed questions"
+        : currentIndex < payload.questions.length - 1
+          ? "Next question"
+          : "Return to index";
       nextButton.disabled = !answer;
+      retryButton.style.display = answer && !answer.correct ? "inline-block" : "none";
+      returnButton.textContent = isMissedReview ? "Back to missed questions" : "Back to index";
     }
 
     nextButton.addEventListener("click", () => {
+      if (navigationMode === "missed") {
+        const missedIndexes = missedQuestionIndexes();
+        const currentMissedPosition = missedIndexes.indexOf(currentIndex);
+        if (currentMissedPosition >= 0 && currentMissedPosition < missedIndexes.length - 1) {
+          currentIndex = missedIndexes[currentMissedPosition + 1];
+          enterRetryMode(currentIndex);
+          renderQuestion();
+          return;
+        }
+        showView("missed");
+        return;
+      }
+
       if (currentIndex < payload.questions.length - 1) {
         currentIndex += 1;
         renderQuestion();
@@ -742,17 +1176,44 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       showView("index");
     });
 
+    retryButton.addEventListener("click", () => {
+      enterRetryMode(currentIndex);
+      renderQuestion();
+    });
+
+    clearMarksButton.addEventListener("click", () => {
+      clearMissMarks(currentIndex);
+      saveQuizState();
+      updateMissedControls();
+      renderIndex();
+      renderMissedQuestions();
+      renderQuestion();
+    });
+
     returnButton.addEventListener("click", () => {
-      showView("index");
+      showView(navigationMode === "missed" ? "missed" : "index");
     });
 
     indexButton.addEventListener("click", () => {
+      navigationMode = "all";
       showView("index");
+    });
+
+    missedButton.addEventListener("click", () => {
+      navigationMode = "missed";
+      renderMissedQuestions();
+      showView("missed");
     });
 
     restartButton.addEventListener("click", () => {
       answers.clear();
+      missMarks.clear();
+      retryQueue.clear();
+      navigationMode = "all";
+      saveQuizState();
+      updateMissedControls();
       renderIndex();
+      renderMissedQuestions();
       currentIndex = 0;
       renderQuestion();
       showView("quiz");
@@ -770,7 +1231,10 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       });
     }
 
+    loadQuizState();
+    updateMissedControls();
     renderIndex();
+    renderMissedQuestions();
   </script>
 </body>
 </html>`;

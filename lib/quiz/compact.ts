@@ -1,17 +1,6 @@
 import { z } from "zod";
 import type { QuizPayload } from "@/lib/types";
-
-const CompactQuestionSchema = z.tuple([
-  z.string().min(1, "compact question text is required"),
-  z.array(z.string().min(1, "compact options cannot be empty")).length(4, "compact question needs 4 options"),
-  z.union([z.string(), z.number()]),
-  z.string().min(1, "compact explanation is required"),
-  z.tuple([z.string().min(1), z.union([z.string(), z.number()]), z.string().min(1)])
-]);
-
-const CompactQuizSchema = z.object({
-  questions: z.array(CompactQuestionSchema).min(1, "compact questions must contain at least 1 item")
-});
+import { optionLabels } from "@/lib/quiz/options";
 
 function issuePrefix(path: (string | number)[]): string {
   if (path.length === 0) {
@@ -21,25 +10,42 @@ function issuePrefix(path: (string | number)[]): string {
   return `${path.join(".")}: `;
 }
 
-function normalizeCorrectIndex(value: string | number): number | null {
+function createCompactQuizSchema(optionCount: number) {
+  const CompactQuestionSchema = z.tuple([
+    z.string().min(1, "compact question text is required"),
+    z
+      .array(z.string().min(1, "compact options cannot be empty"))
+      .length(optionCount, `compact question needs ${optionCount} options`),
+    z.union([z.string(), z.number()]),
+    z.string().min(1, "compact explanation is required"),
+    z.tuple([z.string().min(1), z.union([z.string(), z.number()]), z.string().min(1)])
+  ]);
+
+  return z.object({
+    questions: z.array(CompactQuestionSchema).min(1, "compact questions must contain at least 1 item")
+  });
+}
+
+function normalizeCorrectIndex(value: string | number, optionCount: number): number | null {
   if (typeof value === "number") {
-    if (value >= 0 && value <= 3) {
+    if (value >= 0 && value < optionCount) {
       return value;
     }
-    if (value >= 1 && value <= 4) {
+    if (value >= 1 && value <= optionCount) {
       return value - 1;
     }
     return null;
   }
 
   const normalized = value.trim().toUpperCase();
-  if (["A", "B", "C", "D"].includes(normalized)) {
+  const labels = optionLabels(optionCount);
+  if (labels.includes(normalized)) {
     return normalized.charCodeAt(0) - 65;
   }
 
   if (/^\d+$/.test(normalized)) {
     const parsed = Number(normalized);
-    return normalizeCorrectIndex(parsed);
+    return normalizeCorrectIndex(parsed, optionCount);
   }
 
   return null;
@@ -51,8 +57,8 @@ export interface CompactParseResult {
   errors: string[];
 }
 
-export function parseCompactQuizPayload(raw: unknown): CompactParseResult {
-  const result = CompactQuizSchema.safeParse(raw);
+export function parseCompactQuizPayload(raw: unknown, optionCount = 4): CompactParseResult {
+  const result = createCompactQuizSchema(optionCount).safeParse(raw);
   if (!result.success) {
     return {
       success: false,
@@ -65,7 +71,7 @@ export function parseCompactQuizPayload(raw: unknown): CompactParseResult {
       success: true,
       data: {
         questions: result.data.questions.map((question) => {
-          const correctIndex = normalizeCorrectIndex(question[2]);
+          const correctIndex = normalizeCorrectIndex(question[2], optionCount);
           if (correctIndex === null) {
             throw new Error("Compact JSON uses an invalid correct answer index.");
           }
@@ -73,12 +79,7 @@ export function parseCompactQuizPayload(raw: unknown): CompactParseResult {
           const page = String(question[4][1]).trim() || "unknown";
           return {
             question: question[0].trim(),
-            options: [
-              question[1][0].trim(),
-              question[1][1].trim(),
-              question[1][2].trim(),
-              question[1][3].trim()
-            ] as [string, string, string, string],
+            options: question[1].map((option) => option.trim()),
             correctAnswer: question[1][correctIndex].trim(),
             explanation: question[3].trim(),
             source: {
@@ -100,7 +101,7 @@ export function parseCompactQuizPayload(raw: unknown): CompactParseResult {
   }
 }
 
-export function tryParseCompactQuizPayload(raw: unknown): QuizPayload | null {
-  const result = parseCompactQuizPayload(raw);
+export function tryParseCompactQuizPayload(raw: unknown, optionCount = 4): QuizPayload | null {
+  const result = parseCompactQuizPayload(raw, optionCount);
   return result.success ? result.data ?? null : null;
 }

@@ -1,11 +1,14 @@
 import type { QuizPayload, QuizQualityReport, QuizQuestion } from "@/lib/types";
 
-function positionCounts(questions: QuizQuestion[]): [number, number, number, number] {
-  const counts: [number, number, number, number] = [0, 0, 0, 0];
+function positionCounts(questions: QuizQuestion[]): number[] {
+  const maxOptionCount = questions.reduce((maxCount, question) => {
+    return Math.max(maxCount, question.options.length);
+  }, 0);
+  const counts = Array.from({ length: maxOptionCount }, () => 0);
 
   for (const question of questions) {
     const correctIndex = question.options.findIndex((option) => option === question.correctAnswer);
-    if (correctIndex >= 0 && correctIndex <= 3) {
+    if (correctIndex >= 0 && correctIndex < counts.length) {
       counts[correctIndex] += 1;
     }
   }
@@ -24,7 +27,7 @@ function rebalanceQuestion(question: QuizQuestion, targetIndex: number): QuizQue
   }
 
   const remainingOptions = question.options.filter((_, index) => index !== currentIndex);
-  const nextOptions = ["", "", "", ""] as [string, string, string, string];
+  const nextOptions = Array.from({ length: question.options.length }, () => "");
   nextOptions[targetIndex] = question.correctAnswer;
 
   let remainingCursor = 0;
@@ -47,12 +50,13 @@ export function rebalanceAnswerPositions(
   startOffset = 0
 ): { quiz: QuizPayload; report: QuizQualityReport } {
   const balancedQuestions = payload.questions.map((question, index) =>
-    rebalanceQuestion(question, (startOffset + index) % 4)
+    question.options.length > 0 ? rebalanceQuestion(question, (startOffset + index) % question.options.length) : question
   );
   const originalCounts = positionCounts(payload.questions);
   const balancedCounts = positionCounts(balancedQuestions);
-  const maxOriginalCount = Math.max(...originalCounts);
-  const skewDetected = payload.questions.length >= 4 && maxOriginalCount / payload.questions.length >= 0.6;
+  const maxOriginalCount = originalCounts.length > 0 ? Math.max(...originalCounts) : 0;
+  const optionCount = originalCounts.length;
+  const skewDetected = optionCount > 0 && payload.questions.length >= optionCount && maxOriginalCount / payload.questions.length >= 0.6;
   const duplicateOptionQuestionCount = payload.questions.filter(hasDuplicateOptions).length;
 
   return {

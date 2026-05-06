@@ -1,9 +1,11 @@
 import { extractPdfWithRetry } from "@/lib/pdf/extract";
 import type {
   FileProcessingStatus,
+  PromptDensity,
   ProcessedBatchResult,
   ProcessingProgress,
   ProcessingStage,
+  ResponseFormat,
   SourceChunk
 } from "@/lib/types";
 import { chunkText } from "@/lib/text/chunking";
@@ -38,6 +40,11 @@ interface ProcessPdfBatchOptions {
   limits?: Partial<ProcessingLimits>;
   signal?: AbortSignal;
   topicFocus?: string;
+  ocrEnabled?: boolean;
+  targetQuestionCount?: number;
+  questionsPerPrompt?: number;
+  promptDensity?: PromptDensity;
+  responseFormat?: ResponseFormat;
   onProgress?: (progress: ProcessingProgress) => void;
 }
 
@@ -57,11 +64,23 @@ function createInitialStatuses(files: File[]): FileProcessingStatus[] {
   }));
 }
 
-function extensionIsPdf(file: File): boolean {
+function isSupportedSourceFile(file: File): boolean {
   if (file.type.toLowerCase() === "application/pdf") {
     return true;
   }
-  return file.name.toLowerCase().endsWith(".pdf");
+
+  if (
+    file.type.toLowerCase() ===
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return true;
+  }
+
+  if (file.type.toLowerCase().startsWith("image/")) {
+    return true;
+  }
+
+  return /\.(pdf|docx|png|jpe?g|webp|gif|bmp|tiff?)$/i.test(file.name);
 }
 
 function sanitizeForId(fileName: string): string {
@@ -93,6 +112,17 @@ function emitProgress(
     currentFile,
     statusSnapshot: cloneStatuses(statuses)
   });
+}
+
+function resolveProcessingLimits(options: ProcessPdfBatchOptions): ProcessingLimits {
+  const baseLimits: ProcessingLimits = { ...DEFAULT_LIMITS, ...(options.limits ?? {}) };
+
+  return {
+    ...baseLimits,
+    maxChunksPerFile: Number.MAX_SAFE_INTEGER,
+    maxTotalChunks: Number.MAX_SAFE_INTEGER,
+    maxPromptChars: Number.MAX_SAFE_INTEGER
+  };
 }
 
 function dedupeChunks(chunks: SourceChunk[]): SourceChunk[] {
@@ -200,16 +230,17 @@ export async function processPdfBatch(
   files: File[],
   options: ProcessPdfBatchOptions = {}
 ): Promise<ProcessedBatchResult> {
-  const limits: ProcessingLimits = { ...DEFAULT_LIMITS, ...(options.limits ?? {}) };
+  const limits = resolveProcessingLimits(options);
   const allStatuses = createInitialStatuses(files);
   const warnings: string[] = [];
   const skippedFiles: string[] = [];
   let processedBytes = 0;
   let processedFiles = 0;
   let totalPages = 0;
+  let sourceOrderCounter = 0;
 
   if (files.length === 0) {
-    throw new Error("Upload at least one PDF before generating a prompt.");
+    throw new Error("Upload at least one PDF, DOCX, or image before generating a prompt.");
   }
 
   if (files.length > limits.maxFiles) {
@@ -244,11 +275,11 @@ export async function processPdfBatch(
     const file = filesToProcess[index];
     const status = allStatuses[index];
 
-    if (!extensionIsPdf(file)) {
+    if (!isSupportedSourceFile(file)) {
       status.state = "failed";
-      status.message = "Unsupported file type (only PDF is allowed).";
+      status.message = "Unsupported file type (PDF, DOCX, and common image files only).";
       skippedFiles.push(file.name);
-      warnings.push(`Skipped "${file.name}" because it is not a PDF.`);
+      warnings.push(`Skipped "${file.name}" because it is not a supported PDF, DOCX, or image file.`);
       processedBytes += file.size;
       processedFiles += 1;
       emitProgress(
@@ -285,7 +316,7 @@ export async function processPdfBatch(
     }
 
     status.state = "extracting";
-    status.message = "Extracting text...";
+    status.message = options.ocrEnabled ? "Extracting text and OCR..." : "Extracting text...";
     emitProgress(
       options.onProgress,
       "extracting",
@@ -298,9 +329,15 @@ export async function processPdfBatch(
     );
 
     try {
-      const extracted = await extractPdfWithRetry(file, limits.extractionRetries, options.signal);
+      const extracted = await extractPdfWithRetry(
+        file,
+        limits.extractionRetries,
+        options.signal,
+        options.ocrEnabled ?? true
+      );
       totalPages += extracted.pages.length;
       status.pages = extracted.pages.length;
+      status.warnings.push(...extracted.warnings);
 
       status.state = "analyzing";
       status.message = "Chunking and compressing...";
@@ -327,13 +364,15 @@ export async function processPdfBatch(
         const split = chunkText(page.text);
 
         split.forEach((chunkTextValue, chunkIndex) => {
-          const chunkId = `${fileId}-p${page.pageNumber}-c${chunkIndex + 1}`;
+          const pageLabel = page.pageNumber === null ? "unknown" : `p${page.pageNumber}`;
+          const chunkId = `${fileId}-${pageLabel}-c${chunkIndex + 1}`;
           const compressedText = compressChunkText(chunkTextValue);
           rawChunks.push({
-            id: `${fileId}-${page.pageNumber}-${chunkIndex + 1}`,
+            id: `${fileId}-${pageLabel}-${chunkIndex + 1}`,
             chunkId,
             fileName: extracted.fileName,
             page: page.pageNumber,
+            sourceOrder: sourceOrderCounter,
             rawText: chunkTextValue,
             compressedText,
             score:
@@ -341,25 +380,35 @@ export async function processPdfBatch(
               scoreTopicRelevance(chunkTextValue, options.topicFocus),
             estimatedTokens: estimateTokens(compressedText)
           });
+          sourceOrderCounter += 1;
         });
       }
 
       const deduped = dedupeChunks(rawChunks).sort((a, b) => b.score - a.score);
       const selected = deduped.slice(0, limits.maxChunksPerFile);
+      if (deduped.length > selected.length) {
+        status.warnings.push(
+          `Retained the top ${selected.length} of ${deduped.length} chunks for this file to keep the browser responsive.`
+        );
+      }
 
       status.chunks = selected.length;
+      const ocrMessage =
+        extracted.ocrPageCount > 0
+          ? ` OCR used on ${extracted.ocrPageCount} page${extracted.ocrPageCount === 1 ? "" : "s"}.`
+          : "";
 
       if (selected.length === 0) {
         status.state = "warning";
-        status.message = "No usable chunks extracted from this file.";
+        status.message = `No usable chunks extracted from this file.${ocrMessage}`.trim();
         status.warnings.push("No usable chunks were found.");
         skippedFiles.push(file.name);
       } else if (status.warnings.length > 0) {
         status.state = "warning";
-        status.message = `Completed with warning (${selected.length} chunks).`;
+        status.message = `Completed with warning (${selected.length} chunks).${ocrMessage}`;
       } else {
         status.state = "completed";
-        status.message = `Completed (${selected.length} chunks).`;
+        status.message = `Completed (${selected.length} chunks).${ocrMessage}`;
       }
 
       globalChunks.push(...selected);
@@ -389,12 +438,12 @@ export async function processPdfBatch(
   const promptSafeChunks = selectPromptSafeChunks(globallyDeduped, limits);
 
   if (promptSafeChunks.length === 0) {
-    throw new Error("No valid source text could be extracted from uploaded PDFs.");
+    throw new Error("No valid source text could be extracted from the uploaded PDFs, DOCX files, or images.");
   }
 
   if (globallyDeduped.length > promptSafeChunks.length) {
     warnings.push(
-      `Compressed source set from ${globallyDeduped.length} to ${promptSafeChunks.length} chunks to keep the prompt reliable.`
+      `Compressed source set from ${globallyDeduped.length} to ${promptSafeChunks.length} chunks to fit the planned prompt set.`
     );
   }
 

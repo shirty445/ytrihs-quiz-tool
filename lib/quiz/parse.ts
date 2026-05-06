@@ -1,6 +1,6 @@
 import type { QuizPayload, QuizQuestion, ResponseFormat } from "@/lib/types";
 import { parseCompactQuizPayload, tryParseCompactQuizPayload } from "@/lib/quiz/compact";
-import { QuizSchema } from "@/lib/quiz/schema";
+import { createQuizSchema } from "@/lib/quiz/schema";
 import type { QuizSchemaType } from "@/lib/quiz/schema";
 
 export interface ParseQuizResult {
@@ -41,14 +41,10 @@ function issuePrefix(path: (string | number)[]): string {
   return `${path.join(".")}: `;
 }
 
-function asTuple(options: string[]): [string, string, string, string] {
-  return [options[0] ?? "", options[1] ?? "", options[2] ?? "", options[3] ?? ""];
-}
-
 function normalizeQuiz(data: QuizSchemaType | QuizPayload): QuizPayload {
   const questions: QuizQuestion[] = data.questions.map((question) => ({
     question: question.question.trim(),
-    options: asTuple(question.options.map((option) => option.trim())),
+    options: question.options.map((option) => option.trim()),
     correctAnswer: question.correctAnswer.trim(),
     explanation: question.explanation.trim(),
     source: {
@@ -63,7 +59,8 @@ function normalizeQuiz(data: QuizSchemaType | QuizPayload): QuizPayload {
 
 export function parseQuizResponse(
   rawInput: string,
-  responseFormat: ResponseFormat = "standard"
+  responseFormat: ResponseFormat = "standard",
+  optionCount = 4
 ): ParseQuizResult {
   const normalized = normalizeInput(rawInput);
   if (!normalized) {
@@ -81,7 +78,7 @@ export function parseQuizResponse(
   }
 
   if (responseFormat === "compact") {
-    const compactResult = parseCompactQuizPayload(parsed);
+    const compactResult = parseCompactQuizPayload(parsed, optionCount);
     if (compactResult.success && compactResult.data) {
       return {
         success: true,
@@ -99,10 +96,10 @@ export function parseQuizResponse(
     };
   }
 
-  const result = QuizSchema.safeParse(parsed);
+  const result = createQuizSchema(optionCount).safeParse(parsed);
   if (!result.success) {
     try {
-      const compactPayload = tryParseCompactQuizPayload(parsed);
+      const compactPayload = tryParseCompactQuizPayload(parsed, optionCount);
       if (compactPayload) {
         return {
           success: true,

@@ -70,7 +70,7 @@ export function QuizEditor({ quiz, onChange }: QuizEditorProps) {
                       onChange={(event) =>
                         onChange(
                           updateQuestion(quiz, questionIndex, (current) => {
-                            const nextOptions = [...current.options] as [string, string, string, string];
+                            const nextOptions = [...current.options];
                             nextOptions[optionIndex] = event.target.value;
                             return {
                               ...current,

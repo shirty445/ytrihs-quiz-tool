@@ -19,7 +19,7 @@ export function FileStatusList({ statuses }: FileStatusListProps) {
           </header>
           <p className="file-message">{status.message}</p>
           <p className="file-meta">
-            Pages: {status.pages} | Chunks: {status.chunks}
+            Pages/Items: {status.pages} | Chunks: {status.chunks}
           </p>
           {status.warnings.length > 0 ? (
             <ul className="warning-list">

@@ -13,6 +13,8 @@ export type FileState = "queued" | "extracting" | "analyzing" | "completed" | "w
 export type Difficulty = "easy" | "medium" | "hard" | "mixed";
 export type PromptDensity = "light" | "standard" | "dense";
 export type ResponseFormat = "standard" | "compact";
+export type OptionCount = 4 | 5;
+export type ChunkOrdering = "best_match" | "page_order" | "random";
 
 export interface QuizSettings {
   difficulty: Difficulty;
@@ -21,10 +23,15 @@ export interface QuizSettings {
   promptDensity: PromptDensity;
   questionsPerPrompt: number;
   responseFormat: ResponseFormat;
+  optionCount: OptionCount;
+  questionStyle: string;
+  customPromptInstructions: string;
+  ocrEnabled: boolean;
+  chunkOrdering: ChunkOrdering;
 }
 
 export interface PdfPageText {
-  pageNumber: number;
+  pageNumber: number | null;
   text: string;
 }
 
@@ -33,6 +40,8 @@ export interface ExtractedPdf {
   fileSize: number;
   pages: PdfPageText[];
   totalTextLength: number;
+  warnings: string[];
+  ocrPageCount: number;
 }
 
 export interface SourceChunk {
@@ -40,6 +49,7 @@ export interface SourceChunk {
   chunkId: string;
   fileName: string;
   page: number | null;
+  sourceOrder: number;
   rawText: string;
   compressedText: string;
   score: number;
@@ -80,7 +90,7 @@ export interface ProcessedBatchResult extends SourcePacket {
 
 export interface QuizQuestion {
   question: string;
-  options: [string, string, string, string];
+  options: string[];
   correctAnswer: string;
   explanation: string;
   source: {
@@ -95,8 +105,8 @@ export interface QuizPayload {
 }
 
 export interface QuizQualityReport {
-  originalCorrectPositionCounts: [number, number, number, number];
-  balancedCorrectPositionCounts: [number, number, number, number];
+  originalCorrectPositionCounts: number[];
+  balancedCorrectPositionCounts: number[];
   skewDetected: boolean;
   duplicateOptionQuestionCount: number;
 }
@@ -119,4 +129,11 @@ export interface PromptBatchState extends PromptBatch {
   addedQuestionCount: number;
   duplicateQuestionCount: number;
   qualityNotes: string[];
+  promptOverride: string | null;
+  difficulty: Difficulty;
+  topicFocus: string;
+  responseFormat: ResponseFormat;
+  optionCount: OptionCount;
+  questionStyle: string;
+  customPromptInstructions: string;
 }

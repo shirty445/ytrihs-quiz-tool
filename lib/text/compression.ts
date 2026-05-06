@@ -122,6 +122,10 @@ export function fingerprintText(text: string): string {
     return "";
   }
 
-  const compact = Array.from(new Set(tokens)).sort().slice(0, 40).join("|");
-  return compact;
+  const head = tokens.slice(0, 18).join("|");
+  const middleStart = Math.max(0, Math.floor(tokens.length / 2) - 6);
+  const middle = tokens.slice(middleStart, middleStart + 12).join("|");
+  const tail = tokens.slice(-12).join("|");
+
+  return `${tokens.length}:${head}::${middle}::${tail}`;
 }

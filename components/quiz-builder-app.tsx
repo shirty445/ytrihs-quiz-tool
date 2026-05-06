@@ -5,21 +5,29 @@ import { FileStatusList } from "@/components/file-status-list";
 import { QuizEditor } from "@/components/quiz-editor";
 import { StageIndicator } from "@/components/stage-indicator";
 import { processPdfBatch } from "@/lib/pdf/process-pdfs";
+import { buildMasterPrompt } from "@/lib/prompt/build-master-prompt";
 import {
   normalizeQuestionsPerPrompt,
   PROMPT_DENSITY_PRESETS,
   QUESTIONS_PER_PROMPT_OPTIONS
 } from "@/lib/prompt/modes";
-import { buildMasterPrompt } from "@/lib/prompt/build-master-prompt";
 import { buildPromptBatches } from "@/lib/prompt/plan";
 import { quizToCsv, quizToJson } from "@/lib/quiz/export";
 import { quizToHtml } from "@/lib/quiz/html";
 import { mergeQuizPayload } from "@/lib/quiz/merge";
+import {
+  formatOptionRange,
+  normalizeOptionCount,
+  OPTION_COUNT_OPTIONS,
+  optionLabels
+} from "@/lib/quiz/options";
 import { parseQuizResponse } from "@/lib/quiz/parse";
 import { rebalanceAnswerPositions } from "@/lib/quiz/quality";
 import type {
+  ChunkOrdering,
   Difficulty,
   FileProcessingStatus,
+  OptionCount,
   ProcessedBatchResult,
   ProcessingStage,
   PromptBatch,
@@ -30,7 +38,9 @@ import type {
   ResponseFormat
 } from "@/lib/types";
 
-const QUESTION_COUNT_OPTIONS = [5, 10, 25, 50, 100, 200, 300];
+const QUESTION_COUNT_OPTIONS = [5, 10, 25, 50, 100, 200, 300, 500, 1000];
+const SUPPORTED_SOURCE_ACCEPT =
+  "application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff";
 
 const DEFAULT_SETTINGS: QuizSettings = {
   difficulty: "medium",
@@ -38,7 +48,12 @@ const DEFAULT_SETTINGS: QuizSettings = {
   targetQuestionCount: 25,
   promptDensity: "standard",
   questionsPerPrompt: PROMPT_DENSITY_PRESETS.standard.questionsPerPrompt,
-  responseFormat: "standard"
+  responseFormat: "standard",
+  optionCount: 4,
+  questionStyle: "",
+  customPromptInstructions: "",
+  ocrEnabled: true,
+  chunkOrdering: "best_match"
 };
 
 function formatBytes(bytes: number): string {
@@ -83,6 +98,18 @@ function buildHtmlFileName(questionCount: number): string {
   return `interactive-quiz-${questionCount}-questions.html`;
 }
 
+function chunkOrderingLabel(ordering: ChunkOrdering): string {
+  switch (ordering) {
+    case "page_order":
+      return "page order";
+    case "random":
+      return "randomized";
+    case "best_match":
+    default:
+      return "best-match order";
+  }
+}
+
 function stageSummaryLabel(stage: ProcessingStage): string {
   switch (stage) {
     case "idle":
@@ -90,7 +117,7 @@ function stageSummaryLabel(stage: ProcessingStage): string {
     case "uploading":
       return "Uploading files";
     case "extracting":
-      return "Extracting PDF text";
+      return "Extracting file text";
     case "analyzing":
       return "Analyzing and compressing chunks";
     case "building_prompt":
@@ -106,33 +133,65 @@ function stageSummaryLabel(stage: ProcessingStage): string {
   }
 }
 
-function createPromptBatchState(batches: PromptBatch[]): PromptBatchState[] {
+function createPromptBatchState(batches: PromptBatch[], settings: QuizSettings): PromptBatchState[] {
   return batches.map((batch) => ({
     ...batch,
     response: "",
     status: "pending",
     addedQuestionCount: 0,
     duplicateQuestionCount: 0,
-    qualityNotes: []
+    qualityNotes: [],
+    promptOverride: null,
+    difficulty: settings.difficulty,
+    topicFocus: settings.topicFocus,
+    responseFormat: settings.responseFormat,
+    optionCount: settings.optionCount,
+    questionStyle: settings.questionStyle,
+    customPromptInstructions: settings.customPromptInstructions
   }));
+}
+
+function buildPromptText(
+  batch: PromptBatchState,
+  totalBatchCount: number,
+  previousQuestions: string[]
+): string {
+  return (
+    batch.promptOverride ??
+    buildMasterPrompt({
+      chunks: batch.chunks,
+      difficulty: batch.difficulty,
+      topicFocus: batch.topicFocus,
+      questionCount: batch.questionCount,
+      batchLabel: `Prompt ${batch.batchNumber} of ${totalBatchCount}`,
+      previousQuestions,
+      responseFormat: batch.responseFormat,
+      optionCount: batch.optionCount,
+      questionStyle: batch.questionStyle,
+      customPromptInstructions: batch.customPromptInstructions
+    })
+  );
 }
 
 function nextPendingBatchIndex(batches: PromptBatchState[]): number {
   return batches.findIndex((batch) => batch.status === "pending");
 }
 
-function buildSampleResponse(questionCount: number, responseFormat: ResponseFormat): string {
+function buildSampleOptions(optionCount: OptionCount, questionIndex: number): string[] {
+  return optionLabels(optionCount).map((label) => `Sample option ${label}${questionIndex + 1}`);
+}
+
+function buildSampleResponse(
+  questionCount: number,
+  responseFormat: ResponseFormat,
+  optionCount: OptionCount
+): string {
   if (responseFormat === "compact") {
     return JSON.stringify(
       {
         questions: Array.from({ length: questionCount }, (_, index) => [
           `Sample question ${index + 1}?`,
-          [
-            `Sample option A${index + 1}`,
-            `Sample option B${index + 1}`,
-            `Sample option C${index + 1}`,
-            `Sample option D${index + 1}`
-          ],
+          buildSampleOptions(optionCount, index),
           0,
           `Sample explanation ${index + 1}.`,
           ["Sample.pdf", String(index + 1), `sample-chunk-${index + 1}`]
@@ -145,22 +204,20 @@ function buildSampleResponse(questionCount: number, responseFormat: ResponseForm
 
   return JSON.stringify(
     {
-      questions: Array.from({ length: questionCount }, (_, index) => ({
-        question: `Sample question ${index + 1}?`,
-        options: [
-          `Sample option A${index + 1}`,
-          `Sample option B${index + 1}`,
-          `Sample option C${index + 1}`,
-          `Sample option D${index + 1}`
-        ],
-        correctAnswer: `Sample option A${index + 1}`,
-        explanation: `Sample explanation ${index + 1}.`,
-        source: {
-          file: "Sample.pdf",
-          page: String(index + 1),
-          chunkId: `sample-chunk-${index + 1}`
-        }
-      }))
+      questions: Array.from({ length: questionCount }, (_, index) => {
+        const options = buildSampleOptions(optionCount, index);
+        return {
+          question: `Sample question ${index + 1}?`,
+          options,
+          correctAnswer: options[0] ?? "",
+          explanation: `Sample explanation ${index + 1}.`,
+          source: {
+            file: "Sample.pdf",
+            page: String(index + 1),
+            chunkId: `sample-chunk-${index + 1}`
+          }
+        };
+      })
     },
     null,
     2
@@ -194,16 +251,12 @@ export function QuizBuilderApp() {
     [promptBatches]
   );
   const currentBatch = promptBatches[currentBatchIndex] ?? null;
+  const previousQuestions = useMemo(
+    () => (quiz?.questions ?? []).map((question) => question.question).slice(-25),
+    [quiz]
+  );
   const currentPrompt = currentBatch
-    ? buildMasterPrompt({
-        chunks: currentBatch.chunks,
-        difficulty: settings.difficulty,
-        topicFocus: settings.topicFocus,
-        questionCount: currentBatch.questionCount,
-        batchLabel: `Prompt ${currentBatch.batchNumber} of ${promptBatches.length}`,
-        previousQuestions: (quiz?.questions ?? []).map((question) => question.question).slice(-25),
-        responseFormat: settings.responseFormat
-      })
+    ? buildPromptText(currentBatch, promptBatches.length, previousQuestions)
     : "";
 
   function resetPromptWorkflow(): void {
@@ -249,16 +302,13 @@ export function QuizBuilderApp() {
   }
 
   function buildPromptQueue(processed: ProcessedBatchResult) {
-    const batches = buildPromptBatches(
-      processed.chunks,
-      settings.targetQuestionCount,
-      {
-        questionsPerPrompt: settings.questionsPerPrompt,
-        promptDensity: settings.promptDensity,
-        responseFormat: settings.responseFormat
-      }
-    );
-    const nextBatches = createPromptBatchState(batches);
+    const batches = buildPromptBatches(processed.chunks, settings.targetQuestionCount, {
+      questionsPerPrompt: settings.questionsPerPrompt,
+      promptDensity: settings.promptDensity,
+      responseFormat: settings.responseFormat,
+      chunkOrdering: settings.chunkOrdering
+    });
+    const nextBatches = createPromptBatchState(batches, settings);
     const requestedPromptCount = Math.max(
       1,
       Math.ceil(settings.targetQuestionCount / normalizeQuestionsPerPrompt(settings.questionsPerPrompt))
@@ -267,16 +317,17 @@ export function QuizBuilderApp() {
       nextBatches.length > requestedPromptCount
         ? ` Source volume required ${nextBatches.length - requestedPromptCount} extra prompt${nextBatches.length - requestedPromptCount === 1 ? "" : "s"} to keep each batch usable.`
         : "";
+
     setPromptBatches(nextBatches);
     setCurrentBatchIndex(0);
     setBatchMessage(
-      `Prepared ${nextBatches.length} prompt${nextBatches.length === 1 ? "" : "s"} for ${nextBatches.reduce((sum, batch) => sum + batch.questionCount, 0)} planned questions at ${settings.questionsPerPrompt} per prompt in ${PROMPT_DENSITY_PRESETS[settings.promptDensity].label} mode using ${settings.responseFormat === "compact" ? "compact" : "standard"} JSON.${sourceSafetyNote}`
+      `Prepared ${nextBatches.length} prompt${nextBatches.length === 1 ? "" : "s"} for ${nextBatches.reduce((sum, batch) => sum + batch.questionCount, 0)} planned questions at ${settings.questionsPerPrompt} per prompt in ${PROMPT_DENSITY_PRESETS[settings.promptDensity].label} mode using ${settings.responseFormat === "compact" ? "compact" : "standard"} JSON with ${settings.optionCount} choices per question and ${chunkOrderingLabel(settings.chunkOrdering)}.${sourceSafetyNote}`
     );
   }
 
   async function buildPromptFromFiles() {
     if (files.length === 0) {
-      setErrorMessage("Upload at least one PDF before generating prompts.");
+      setErrorMessage("Upload at least one PDF, DOCX, or image before generating prompts.");
       return;
     }
 
@@ -290,6 +341,11 @@ export function QuizBuilderApp() {
     try {
       const processed = await processPdfBatch(files, {
         topicFocus: settings.topicFocus,
+        ocrEnabled: settings.ocrEnabled,
+        targetQuestionCount: settings.targetQuestionCount,
+        questionsPerPrompt: settings.questionsPerPrompt,
+        promptDensity: settings.promptDensity,
+        responseFormat: settings.responseFormat,
         onProgress: (progress) => {
           setStage(progress.stage);
           setStatuses(progress.statusSnapshot);
@@ -327,6 +383,22 @@ export function QuizBuilderApp() {
     setStage("waiting_for_ai");
   }
 
+  function updateCurrentPromptOverride(value: string) {
+    setPromptBatches((previous) =>
+      previous.map((batch, index) =>
+        index === currentBatchIndex ? { ...batch, promptOverride: value } : batch
+      )
+    );
+  }
+
+  function clearCurrentPromptOverride() {
+    setPromptBatches((previous) =>
+      previous.map((batch, index) =>
+        index === currentBatchIndex ? { ...batch, promptOverride: null } : batch
+      )
+    );
+  }
+
   function updateCurrentBatchResponse(value: string) {
     setPromptBatches((previous) =>
       previous.map((batch, index) => (index === currentBatchIndex ? { ...batch, response: value } : batch))
@@ -341,7 +413,11 @@ export function QuizBuilderApp() {
     setValidationErrors([]);
     setErrorMessage(null);
 
-    const parsed = parseQuizResponse(currentBatch.response, settings.responseFormat);
+    const parsed = parseQuizResponse(
+      currentBatch.response,
+      currentBatch.responseFormat,
+      currentBatch.optionCount
+    );
     if (!parsed.success || !parsed.data) {
       setStage("failed");
       setValidationErrors(parsed.errors);
@@ -363,7 +439,9 @@ export function QuizBuilderApp() {
     }
 
     if (rebalanced.report.skewDetected) {
-      qualityNotes.push("Detected answer-position skew and redistributed correct options across A-D.");
+      qualityNotes.push(
+        `Detected answer-position skew and redistributed correct options across ${formatOptionRange(currentBatch.optionCount)}.`
+      );
     }
 
     if (rebalanced.report.duplicateOptionQuestionCount > 0) {
@@ -417,6 +495,13 @@ export function QuizBuilderApp() {
     }));
   }
 
+  function onOptionCountChange(value: string) {
+    setSettings((previous) => ({
+      ...previous,
+      optionCount: normalizeOptionCount(Number(value))
+    }));
+  }
+
   async function onCopyPrompt() {
     if (!currentPrompt) {
       return;
@@ -437,15 +522,16 @@ export function QuizBuilderApp() {
       <section className="hero">
         <h1>shirty's quiz tool</h1>
         <p className="hero-subtitle">
-          Turn PDFs into a prompt queue, auto-balance answer positions after parsing, and keep denser prompt features
-          modular enough to remove later if needed.
+          Turn PDFs, DOCX files, or images into a prompt queue, OCR text from embedded scans when needed, and keep the
+          quiz flow editable from source packet to export.
         </p>
       </section>
 
       <section className="panel">
-        <h2>1) Upload PDFs</h2>
+        <h2>1) Upload PDFs, DOCX Files, Or Images</h2>
         <p className="muted">
-          Supports large batches. Each PDF is handled independently so one failure does not knock out the full run.
+          Supports large batches. Each file is handled independently, and OCR can read text from images embedded in
+          PDFs or DOCX files when standard extraction falls short.
         </p>
 
         <div className="actions-row">
@@ -469,14 +555,14 @@ export function QuizBuilderApp() {
           >
             <input
               type="file"
-              accept="application/pdf,.pdf"
+              accept={SUPPORTED_SOURCE_ACCEPT}
               multiple
               onChange={(event) => {
                 onPickFiles(event.target.files);
                 event.target.value = "";
               }}
             />
-            <strong>Drop PDFs here</strong>
+            <strong>Drop PDFs, DOCX files, or images here</strong>
             <span>or click to browse</span>
           </label>
 
@@ -514,8 +600,8 @@ export function QuizBuilderApp() {
       <section className="panel">
         <h2>2) Quiz Settings</h2>
         <p className="muted">
-          Prompt density and compact response mode are isolated settings so they can be removed later without rewriting
-          the core quiz pipeline.
+          Tune the quiz shape, add extra prompt instructions, and rebuild the queue whenever you want a different
+          prompt strategy.
         </p>
         <div className="settings-grid">
           <label className="field">
@@ -594,6 +680,50 @@ export function QuizBuilderApp() {
           </label>
 
           <label className="field">
+            <span>Answer Choices Per Question</span>
+            <select value={settings.optionCount} onChange={(event) => onOptionCountChange(event.target.value)}>
+              {OPTION_COUNT_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            <span>OCR For Images And Scans</span>
+            <select
+              value={settings.ocrEnabled ? "on" : "off"}
+              onChange={(event) =>
+                setSettings((previous) => ({
+                  ...previous,
+                  ocrEnabled: event.target.value === "on"
+                }))
+              }
+            >
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Chunk Ordering</span>
+            <select
+              value={settings.chunkOrdering}
+              onChange={(event) =>
+                setSettings((previous) => ({
+                  ...previous,
+                  chunkOrdering: event.target.value as ChunkOrdering
+                }))
+              }
+            >
+              <option value="best_match">Best Match</option>
+              <option value="page_order">Page Order</option>
+              <option value="random">Randomized</option>
+            </select>
+          </label>
+
+          <label className="field">
             <span>Topic Focus (Optional)</span>
             <input
               type="text"
@@ -607,11 +737,42 @@ export function QuizBuilderApp() {
               }
             />
           </label>
+
+          <label className="field">
+            <span>Question Style (Optional)</span>
+            <input
+              type="text"
+              placeholder="Example: scenario-based, no trick questions"
+              value={settings.questionStyle}
+              onChange={(event) =>
+                setSettings((previous) => ({
+                  ...previous,
+                  questionStyle: event.target.value
+                }))
+              }
+            />
+          </label>
+
+          <label className="field field-wide">
+            <span>Additional Prompt Instructions (Optional)</span>
+            <textarea
+              placeholder="Example: prioritize definitions first, keep distractors plausible, avoid negative wording, cite chunk evidence directly in explanations."
+              value={settings.customPromptInstructions}
+              onChange={(event) =>
+                setSettings((previous) => ({
+                  ...previous,
+                  customPromptInstructions: event.target.value
+                }))
+              }
+              rows={5}
+            />
+          </label>
         </div>
 
         <p className="muted">
           {PROMPT_DENSITY_PRESETS[settings.promptDensity].description} Current response format:{" "}
-          {settings.responseFormat === "compact" ? "compact experimental mode" : "standard verbose mode"}.
+          {settings.responseFormat === "compact" ? "compact experimental mode" : "standard verbose mode"} with{" "}
+          {settings.optionCount} choices per question and {chunkOrderingLabel(settings.chunkOrdering)}.
         </p>
 
         <div className="actions-row">
@@ -624,7 +785,7 @@ export function QuizBuilderApp() {
             onClick={regeneratePromptFromExistingSources}
             disabled={!result || isBusy}
           >
-            Rebuild Queue (Same PDFs)
+            Rebuild Queue (Same Files)
           </button>
         </div>
       </section>
@@ -649,8 +810,8 @@ export function QuizBuilderApp() {
         <section className="panel">
           <h2>4) Source Packet Summary</h2>
           <p className="muted">
-            Source files processed: {result.totalSourceFiles} | Pages with text: {result.totalPages} | Prompt chunks:{" "}
-            {result.chunks.length}
+            Source files processed: {result.totalSourceFiles} | Readable pages/items: {result.totalPages} | Prompt
+            chunks: {result.chunks.length}
           </p>
 
           {result.warnings.length > 0 ? (
@@ -672,7 +833,7 @@ export function QuizBuilderApp() {
         <div className="instruction-box">
           <strong>How to use this queue:</strong>
           <ol>
-            <li>Copy the current prompt.</li>
+            <li>Copy or edit the current prompt.</li>
             <li>Paste it into your preferred AI model.</li>
             <li>Copy the AI&apos;s JSON for that batch only.</li>
             <li>Paste it back into the current batch response box.</li>
@@ -696,7 +857,8 @@ export function QuizBuilderApp() {
                   {batch.status === "parsed" ? "(parsed)" : index === currentBatchIndex ? "(current)" : "(queued)"}
                 </strong>
                 <span>
-                  Target {batch.questionCount} questions | {batch.chunkCount} chunks | {batch.sourceFiles.length} files
+                  Target {batch.questionCount} questions | {batch.optionCount} choices | {batch.chunkCount} chunks |{" "}
+                  {batch.sourceFiles.length} files
                 </span>
                 {batch.status === "parsed" ? (
                   <>
@@ -719,12 +881,21 @@ export function QuizBuilderApp() {
           <>
             <p className="muted">
               Current prompt: {currentBatch.batchNumber} of {promptBatches.length}. This batch targets about{" "}
-              {currentBatch.questionCount} questions, but valid under or over counts are accepted. Format:{" "}
-              {settings.responseFormat === "compact" ? "compact JSON" : "standard JSON"}.
+              {currentBatch.questionCount} questions with {currentBatch.optionCount} choices per question in{" "}
+              {currentBatch.responseFormat === "compact" ? "compact JSON" : "standard JSON"}. You can edit this prompt
+              before copying it.
             </p>
             <div className="actions-row">
               <button type="button" onClick={onCopyPrompt} disabled={!currentPrompt}>
                 Copy Current Prompt
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={clearCurrentPromptOverride}
+                disabled={!currentBatch.promptOverride}
+              >
+                Reset Current Prompt
               </button>
               <span className="muted">{copyMessage}</span>
             </div>
@@ -732,7 +903,7 @@ export function QuizBuilderApp() {
             <textarea
               className="large-textarea"
               value={currentPrompt}
-              readOnly
+              onChange={(event) => updateCurrentPromptOverride(event.target.value)}
               placeholder="Your current generated prompt will appear here after processing."
               rows={16}
             />
@@ -746,8 +917,9 @@ export function QuizBuilderApp() {
         <h2>6) Paste Current Batch Response</h2>
         {currentBatch ? (
           <p className="muted">
-            Prompt {currentBatch.batchNumber} targets about {currentBatch.questionCount} questions in{" "}
-            {settings.responseFormat === "compact" ? "compact" : "standard"} JSON. Any valid question count is
+            Prompt {currentBatch.batchNumber} targets about {currentBatch.questionCount} questions with{" "}
+            {currentBatch.optionCount} choices each in{" "}
+            {currentBatch.responseFormat === "compact" ? "compact" : "standard"} JSON. Any valid question count is
             accepted.
           </p>
         ) : (
@@ -776,7 +948,11 @@ export function QuizBuilderApp() {
             className="secondary"
             onClick={() =>
               updateCurrentBatchResponse(
-                buildSampleResponse(currentBatch?.questionCount ?? 1, settings.responseFormat)
+                buildSampleResponse(
+                  currentBatch?.questionCount ?? 1,
+                  currentBatch?.responseFormat ?? "standard",
+                  currentBatch?.optionCount ?? 4
+                )
               )
             }
             disabled={!currentBatch}

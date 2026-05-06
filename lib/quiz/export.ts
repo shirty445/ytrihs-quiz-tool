@@ -1,4 +1,5 @@
 import type { QuizPayload } from "@/lib/types";
+import { optionLabels } from "@/lib/quiz/options";
 
 function escapeCsv(value: string): string {
   const normalized = value.replace(/\r?\n/g, " ").trim();
@@ -13,13 +14,15 @@ export function quizToJson(payload: QuizPayload): string {
 }
 
 export function quizToCsv(payload: QuizPayload): string {
+  const maxOptionCount = payload.questions.reduce(
+    (maxCount, question) => Math.max(maxCount, question.options.length),
+    0
+  );
+  const optionHeaderLabels = optionLabels(maxOptionCount);
   const header = [
     "questionIndex",
     "question",
-    "optionA",
-    "optionB",
-    "optionC",
-    "optionD",
+    ...optionHeaderLabels.map((label) => `option${label}`),
     "correctAnswer",
     "explanation",
     "sourceFile",
@@ -30,10 +33,7 @@ export function quizToCsv(payload: QuizPayload): string {
   const rows = payload.questions.map((question, index) => [
     String(index + 1),
     question.question,
-    question.options[0],
-    question.options[1],
-    question.options[2],
-    question.options[3],
+    ...optionHeaderLabels.map((_, optionIndex) => question.options[optionIndex] ?? ""),
     question.correctAnswer,
     question.explanation,
     question.source.file,
