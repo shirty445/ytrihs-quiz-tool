@@ -1,4 +1,4 @@
-import type { QuizPayload, QuizQuestion, ResponseFormat } from "@/lib/types";
+import type { QuestionReview, QuizPayload, QuizQuestion, ResponseFormat } from "@/lib/types";
 import { parseCompactQuizPayload, tryParseCompactQuizPayload } from "@/lib/quiz/compact";
 import { createQuizSchema } from "@/lib/quiz/schema";
 import type { QuizSchemaType } from "@/lib/quiz/schema";
@@ -41,18 +41,39 @@ function issuePrefix(path: (string | number)[]): string {
   return `${path.join(".")}: `;
 }
 
+function normalizeReview(review: QuestionReview | undefined): QuestionReview | undefined {
+  if (!review) {
+    return undefined;
+  }
+
+  return {
+    coreIdea: review.coreIdea.trim(),
+    whyCorrect: review.whyCorrect.trim(),
+    optionRationales: review.optionRationales.map((rationale) => rationale.trim()),
+    keyFacts: review.keyFacts.map((fact) => fact.trim()).filter((fact) => fact.length > 0),
+    memoryHook: review.memoryHook.trim(),
+    commonConfusion: review.commonConfusion.trim(),
+    sourceQuote: review.sourceQuote.trim()
+  };
+}
+
 function normalizeQuiz(data: QuizSchemaType | QuizPayload): QuizPayload {
-  const questions: QuizQuestion[] = data.questions.map((question) => ({
-    question: question.question.trim(),
-    options: question.options.map((option) => option.trim()),
-    correctAnswer: question.correctAnswer.trim(),
-    explanation: question.explanation.trim(),
-    source: {
-      file: question.source.file.trim(),
-      page: question.source.page.trim() || "unknown",
-      chunkId: question.source.chunkId.trim()
-    }
-  }));
+  const questions: QuizQuestion[] = data.questions.map((question) => {
+    const review = normalizeReview(question.review);
+
+    return {
+      question: question.question.trim(),
+      options: question.options.map((option) => option.trim()),
+      correctAnswer: question.correctAnswer.trim(),
+      explanation: question.explanation.trim(),
+      source: {
+        file: question.source.file.trim(),
+        page: question.source.page.trim() || "unknown",
+        chunkId: question.source.chunkId.trim()
+      },
+      ...(review ? { review } : {})
+    };
+  });
 
   return { questions };
 }
@@ -98,22 +119,17 @@ export function parseQuizResponse(
 
   const result = createQuizSchema(optionCount).safeParse(parsed);
   if (!result.success) {
-    try {
-      const compactPayload = tryParseCompactQuizPayload(parsed, optionCount);
-      if (compactPayload) {
-        return {
-          success: true,
-          data: normalizeQuiz(compactPayload),
-          errors: []
-        };
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Invalid compact JSON";
-      return { success: false, errors: [message] };
+    // A model asked for standard JSON sometimes answers in the compact tuple
+    // shape. Accept that rather than failing the batch.
+    const compactPayload = tryParseCompactQuizPayload(parsed, optionCount);
+    if (compactPayload) {
+      return {
+        success: true,
+        data: normalizeQuiz(compactPayload),
+        errors: []
+      };
     }
-  }
 
-  if (!result.success) {
     const errors = result.error.issues.map((issue) => `${issuePrefix(issue.path)}${issue.message}`);
     return { success: false, errors };
   }

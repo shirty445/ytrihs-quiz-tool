@@ -26,15 +26,30 @@ interface ProcessingLimits {
   extractionRetries: number;
 }
 
+/**
+ * Chunk and character caps default to unlimited: the prompt planner already
+ * enforces a per-batch character budget, and dropping chunks here would defeat
+ * coverage-first generation. They stay configurable as an escape hatch for
+ * callers that genuinely need to cap browser work.
+ */
 const DEFAULT_LIMITS: ProcessingLimits = {
   maxFiles: 60,
   maxFileSizeBytes: 30 * 1024 * 1024,
-  maxChunksPerFile: 18,
-  maxTotalChunks: 120,
-  maxPromptChars: 52_000,
+  maxChunksPerFile: Number.POSITIVE_INFINITY,
+  maxTotalChunks: Number.POSITIVE_INFINITY,
+  maxPromptChars: Number.POSITIVE_INFINITY,
   warningThresholdChars: 220,
   extractionRetries: 2
 };
+
+/**
+ * Budget for the lossy summary used by the copy/paste flow.
+ *
+ * Chunks target 1200 chars, so the old 420-char default discarded roughly two
+ * thirds of every chunk before the model ever saw it. The full-detail path
+ * (local AI) ships `rawText` and skips this entirely.
+ */
+const COMPRESSED_CHUNK_CHARS = 900;
 
 interface ProcessPdfBatchOptions {
   limits?: Partial<ProcessingLimits>;
@@ -115,14 +130,7 @@ function emitProgress(
 }
 
 function resolveProcessingLimits(options: ProcessPdfBatchOptions): ProcessingLimits {
-  const baseLimits: ProcessingLimits = { ...DEFAULT_LIMITS, ...(options.limits ?? {}) };
-
-  return {
-    ...baseLimits,
-    maxChunksPerFile: Number.MAX_SAFE_INTEGER,
-    maxTotalChunks: Number.MAX_SAFE_INTEGER,
-    maxPromptChars: Number.MAX_SAFE_INTEGER
-  };
+  return { ...DEFAULT_LIMITS, ...(options.limits ?? {}) };
 }
 
 function dedupeChunks(chunks: SourceChunk[]): SourceChunk[] {
@@ -366,7 +374,7 @@ export async function processPdfBatch(
         split.forEach((chunkTextValue, chunkIndex) => {
           const pageLabel = page.pageNumber === null ? "unknown" : `p${page.pageNumber}`;
           const chunkId = `${fileId}-${pageLabel}-c${chunkIndex + 1}`;
-          const compressedText = compressChunkText(chunkTextValue);
+          const compressedText = compressChunkText(chunkTextValue, COMPRESSED_CHUNK_CHARS);
           rawChunks.push({
             id: `${fileId}-${pageLabel}-${chunkIndex + 1}`,
             chunkId,
@@ -385,7 +393,9 @@ export async function processPdfBatch(
       }
 
       const deduped = dedupeChunks(rawChunks).sort((a, b) => b.score - a.score);
-      const selected = deduped.slice(0, limits.maxChunksPerFile);
+      const selected = Number.isFinite(limits.maxChunksPerFile)
+        ? deduped.slice(0, limits.maxChunksPerFile)
+        : deduped;
       if (deduped.length > selected.length) {
         status.warnings.push(
           `Retained the top ${selected.length} of ${deduped.length} chunks for this file to keep the browser responsive.`
