@@ -1,4 +1,4 @@
-export const STOP_WORDS = new Set([
+const STOP_WORDS = new Set([
   "the",
   "and",
   "or",
@@ -31,7 +31,7 @@ export const STOP_WORDS = new Set([
   "about"
 ]);
 
-export function tokenize(text: string): string[] {
+function tokenize(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")

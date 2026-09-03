@@ -17,26 +17,6 @@ function safeJson(payload: QuizPayload): string {
     .replace(/&/g, "\\u0026");
 }
 
-/**
- * Identity of a quiz for progress-storage purposes.
- *
- * Hashing the whole payload meant that fixing one typo, or attaching deep
- * reviews, silently orphaned every saved answer. Stems alone, sorted, keep
- * progress attached across edits that do not change what is being asked.
- */
-function quizIdentity(payload: QuizPayload): string {
-  return payload.questions
-    .map((question) =>
-      question.question
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-    )
-    .sort()
-    .join("|");
-}
-
 function hashString(value: string): string {
   let hash = 2166136261;
 
@@ -53,7 +33,7 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
   const escapedTitle = escapeHtml(title);
   const serializedQuiz = safeJson(payload);
   const answerChoiceCopy = escapeHtml(describeAnswerChoiceCounts(payload));
-  const quizStateStorageKey = `quiz-export-state-${hashString(`${title}|${quizIdentity(payload)}`)}`;
+  const quizStateStorageKey = `quiz-export-state-${hashString(`${title}|${JSON.stringify(payload)}`)}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -275,9 +255,8 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     }
 
     .question-row.incorrect {
-      background: #000000;
-      color: #ffffff;
-      border-left: 6px solid #ffffff;
+      background: #ffffff;
+      color: #000000;
     }
 
     .quiz-meta {
@@ -314,25 +293,11 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     .option-button.correct {
       background: #ffffff;
       color: #000000;
-      font-weight: 700;
     }
 
-    /*
-     * These two used to be byte-identical, so after a wrong answer the learner
-     * could not tell which white button was their pick and which was the
-     * answer. Correct is solid; incorrect is inverted with a heavy rule.
-     */
     .option-button.incorrect {
-      background: #000000;
-      color: #ffffff;
-      border-left: 6px solid #ffffff;
-      text-decoration: line-through;
-    }
-
-    .option-mark {
-      display: inline-block;
-      min-width: 1.6em;
-      font-weight: 700;
+      background: #ffffff;
+      color: #000000;
     }
 
     .feedback {
@@ -349,131 +314,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     .feedback p {
       line-height: 1.75;
       margin: 0 0 10px;
-    }
-
-    .verdict {
-      display: block;
-      font-size: 1.15rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      padding: 10px 14px;
-      margin-bottom: 16px;
-      border: 1px solid var(--line);
-    }
-
-    .verdict.is-correct {
-      background: #ffffff;
-      color: #000000;
-    }
-
-    .verdict.is-incorrect {
-      background: #000000;
-      color: #ffffff;
-      border-width: 3px;
-    }
-
-    .review {
-      margin-top: 18px;
-      border-top: 1px solid var(--line);
-      padding-top: 16px;
-    }
-
-    .review[hidden] {
-      display: none;
-    }
-
-    .review-section {
-      margin-bottom: 18px;
-    }
-
-    .review-section h3 {
-      font-size: 0.82rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin: 0 0 8px;
-    }
-
-    .review-section p {
-      margin: 0 0 8px;
-      line-height: 1.75;
-    }
-
-    .review-your-pick {
-      border: 3px solid var(--line);
-      padding: 14px;
-      margin-bottom: 18px;
-    }
-
-    .review-list {
-      margin: 0;
-      padding-left: 20px;
-      line-height: 1.75;
-    }
-
-    .review-list li {
-      margin-bottom: 6px;
-    }
-
-    .review-option {
-      border-left: 3px solid var(--line);
-      padding-left: 12px;
-      margin-bottom: 12px;
-      line-height: 1.7;
-    }
-
-    .review-option strong {
-      display: block;
-      margin-bottom: 4px;
-    }
-
-    .review-quote {
-      border-left: 3px solid var(--line);
-      padding-left: 12px;
-      margin: 0 0 8px;
-      line-height: 1.7;
-      font-style: italic;
-    }
-
-    .review-toggle {
-      margin-bottom: 14px;
-    }
-
-    .ack-row {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-top: 16px;
-    }
-
-    .ack-note {
-      font-size: 0.86rem;
-    }
-
-    .results-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
-      margin-bottom: 20px;
-    }
-
-    .results-tile {
-      border: 1px solid var(--line);
-      padding: 16px;
-    }
-
-    .results-tile strong {
-      display: block;
-      font-size: 2.2rem;
-      line-height: 1;
-      margin-bottom: 6px;
-    }
-
-    .results-tile span {
-      font-size: 0.84rem;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
     }
 
     .quiz-actions {
@@ -618,25 +458,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       </div>
     </section>
 
-    <section class="view" id="resultsView">
-      <div class="card">
-        <h2 class="quiz-title">Session results</h2>
-        <div class="results-grid">
-          <div class="results-tile"><strong id="resultScore">0%</strong><span>Accuracy</span></div>
-          <div class="results-tile"><strong id="resultCorrect">0</strong><span>First-try correct</span></div>
-          <div class="results-tile"><strong id="resultMissed">0</strong><span>Missed at least once</span></div>
-          <div class="results-tile"><strong id="resultMastered">0</strong><span>Mastered</span></div>
-        </div>
-        <p id="resultSummary"></p>
-        <h3 id="resultBreakdownHeading">By source file</h3>
-        <div class="question-list" id="resultBreakdown"></div>
-        <div class="quiz-actions">
-          <button class="nav-button" id="resultDrillButton" type="button">Drill the ones you missed</button>
-          <button class="nav-button" id="resultIndexButton" type="button">Back to index</button>
-        </div>
-      </div>
-    </section>
-
     <section class="view" id="quizView">
       <div class="card">
         <div class="quiz-meta">
@@ -646,54 +467,8 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
         <h2 class="quiz-title" id="questionText"></h2>
         <div class="options" id="options"></div>
         <div class="feedback" id="feedback">
-          <span class="verdict" id="verdict"></span>
           <p><strong>Explanation:</strong> <span id="explanationText"></span></p>
           <p><strong>Source:</strong> <span id="sourceText"></span></p>
-
-          <button class="nav-button review-toggle" id="reviewToggle" type="button">Hide deep review</button>
-
-          <div class="review" id="reviewPanel">
-            <div class="review-your-pick" id="reviewYourPick" hidden>
-              <h3 id="reviewYourPickHeading">Why your answer was wrong</h3>
-              <p id="reviewYourPickText"></p>
-            </div>
-
-            <div class="review-section" id="reviewCoreIdeaSection">
-              <h3>The idea being tested</h3>
-              <p id="reviewCoreIdea"></p>
-            </div>
-
-            <div class="review-section" id="reviewWhyCorrectSection">
-              <h3 id="reviewWhyCorrectHeading">Why the correct answer is right</h3>
-              <p id="reviewWhyCorrect"></p>
-            </div>
-
-            <div class="review-section" id="reviewOptionsSection">
-              <h3>Every option, one by one</h3>
-              <div id="reviewOptions"></div>
-            </div>
-
-            <div class="review-section" id="reviewFactsSection">
-              <h3>Remember this</h3>
-              <ul class="review-list" id="reviewFacts"></ul>
-              <p id="reviewMemoryHook"></p>
-            </div>
-
-            <div class="review-section" id="reviewTrapSection">
-              <h3>The trap</h3>
-              <p id="reviewTrap"></p>
-            </div>
-
-            <div class="review-section" id="reviewQuoteSection">
-              <h3>From the source</h3>
-              <blockquote class="review-quote" id="reviewQuote"></blockquote>
-            </div>
-          </div>
-
-          <div class="ack-row" id="ackRow" hidden>
-            <button class="nav-button" id="ackButton" type="button">I have read this</button>
-            <span class="ack-note" id="ackNote">Read the breakdown before moving on. This question comes back later.</span>
-          </div>
         </div>
         <div class="miss-mark-panel" id="missMarkPanel">
           <div class="miss-mark-header">
@@ -721,7 +496,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const questionList = document.getElementById("questionList");
     const indexView = document.getElementById("indexView");
     const missedView = document.getElementById("missedView");
-    const resultsView = document.getElementById("resultsView");
     const quizView = document.getElementById("quizView");
     const toolbarCopy = document.getElementById("toolbarCopy");
     const progressLabel = document.getElementById("progressLabel");
@@ -729,36 +503,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const questionText = document.getElementById("questionText");
     const options = document.getElementById("options");
     const feedback = document.getElementById("feedback");
-    const verdict = document.getElementById("verdict");
-    const reviewPanel = document.getElementById("reviewPanel");
-    const reviewToggle = document.getElementById("reviewToggle");
-    const reviewYourPick = document.getElementById("reviewYourPick");
-    const reviewYourPickHeading = document.getElementById("reviewYourPickHeading");
-    const reviewYourPickText = document.getElementById("reviewYourPickText");
-    const reviewCoreIdea = document.getElementById("reviewCoreIdea");
-    const reviewCoreIdeaSection = document.getElementById("reviewCoreIdeaSection");
-    const reviewWhyCorrect = document.getElementById("reviewWhyCorrect");
-    const reviewWhyCorrectHeading = document.getElementById("reviewWhyCorrectHeading");
-    const reviewWhyCorrectSection = document.getElementById("reviewWhyCorrectSection");
-    const reviewOptions = document.getElementById("reviewOptions");
-    const reviewOptionsSection = document.getElementById("reviewOptionsSection");
-    const reviewFacts = document.getElementById("reviewFacts");
-    const reviewFactsSection = document.getElementById("reviewFactsSection");
-    const reviewMemoryHook = document.getElementById("reviewMemoryHook");
-    const reviewTrap = document.getElementById("reviewTrap");
-    const reviewTrapSection = document.getElementById("reviewTrapSection");
-    const reviewQuote = document.getElementById("reviewQuote");
-    const reviewQuoteSection = document.getElementById("reviewQuoteSection");
-    const ackRow = document.getElementById("ackRow");
-    const ackButton = document.getElementById("ackButton");
-    const resultScore = document.getElementById("resultScore");
-    const resultCorrect = document.getElementById("resultCorrect");
-    const resultMissed = document.getElementById("resultMissed");
-    const resultMastered = document.getElementById("resultMastered");
-    const resultSummary = document.getElementById("resultSummary");
-    const resultBreakdown = document.getElementById("resultBreakdown");
-    const resultDrillButton = document.getElementById("resultDrillButton");
-    const resultIndexButton = document.getElementById("resultIndexButton");
     const explanationText = document.getElementById("explanationText");
     const sourceText = document.getElementById("sourceText");
     const missMarkPanel = document.getElementById("missMarkPanel");
@@ -783,44 +527,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     const answers = new Map();
     const missMarks = new Map();
     const retryQueue = new Set();
-    /*
-     * Leitner-style mastery. A question enters the drill queue on any wrong
-     * answer and only leaves after two consecutive corrects, so "I got it right
-     * on the second guess" is not treated as learned.
-     */
-    const boxes = new Map();
-    const acknowledged = new Set();
-    let reviewCollapsed = false;
-
-    function getBox(index) {
-      const box = boxes.get(index);
-      return typeof box === "number" ? box : 0;
-    }
-
-    function recordBox(index, isCorrect) {
-      boxes.set(index, isCorrect ? Math.min(getBox(index) + 1, 2) : 0);
-    }
-
-    function isMastered(index) {
-      const answer = answers.get(index);
-      if (!answer) {
-        return false;
-      }
-      if (getMissMarkCount(index) === 0) {
-        return Boolean(answer.correct);
-      }
-      return getBox(index) >= 2;
-    }
-
-    function drillIndexes() {
-      const pending = [];
-      for (let index = 0; index < payload.questions.length; index += 1) {
-        if (answers.has(index) && !isMastered(index)) {
-          pending.push(index);
-        }
-      }
-      return pending;
-    }
     let navigationMode = "all";
     let audioCtx;
     let master;
@@ -849,9 +555,7 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           QUIZ_STATE_STORAGE_KEY,
           JSON.stringify({
             answers: Array.from(answers.entries()),
-            missMarks: Array.from(missMarks.entries()),
-            boxes: Array.from(boxes.entries()),
-            acknowledged: Array.from(acknowledged)
+            missMarks: Array.from(missMarks.entries())
           })
         );
       } catch (error) {
@@ -869,8 +573,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
         const parsed = JSON.parse(raw);
         answers.clear();
         missMarks.clear();
-        boxes.clear();
-        acknowledged.clear();
 
         if (parsed && Array.isArray(parsed.answers)) {
           parsed.answers.forEach((entry) => {
@@ -923,31 +625,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
             const normalizedCount = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
             if (normalizedCount > 0) {
               missMarks.set(index, normalizedCount);
-            }
-          });
-        }
-
-        if (parsed && Array.isArray(parsed.boxes)) {
-          parsed.boxes.forEach((entry) => {
-            if (!Array.isArray(entry) || entry.length !== 2) {
-              return;
-            }
-            const index = Number(entry[0]);
-            const box = Number(entry[1]);
-            if (!Number.isInteger(index) || index < 0 || index >= payload.questions.length) {
-              return;
-            }
-            if (Number.isFinite(box)) {
-              boxes.set(index, Math.max(0, Math.min(2, Math.round(box))));
-            }
-          });
-        }
-
-        if (parsed && Array.isArray(parsed.acknowledged)) {
-          parsed.acknowledged.forEach((value) => {
-            const index = Number(value);
-            if (Number.isInteger(index) && index >= 0 && index < payload.questions.length) {
-              acknowledged.add(index);
             }
           });
         }
@@ -1222,18 +899,15 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
     function showView(view) {
       indexView.classList.toggle("active", view === "index");
       missedView.classList.toggle("active", view === "missed");
-      resultsView.classList.toggle("active", view === "results");
       quizView.classList.toggle("active", view === "quiz");
       toolbarCopy.textContent =
         view === "index"
           ? "Question index view"
           : view === "missed"
             ? "Missed questions review"
-            : view === "results"
-              ? "Session results"
-              : navigationMode === "missed"
-                ? "Missed-question quiz mode"
-                : "Quiz mode";
+            : navigationMode === "missed"
+              ? "Missed-question quiz mode"
+              : "Quiz mode";
     }
 
     function enterRetryMode(index) {
@@ -1254,27 +928,8 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       return response.correct ? "correct" : "incorrect";
     }
 
-    /*
-     * A question is "missed" if it carries X marks or its latest answer was
-     * wrong. Deriving this from missMarks alone meant clearing the Xs quietly
-     * dropped a still-wrong question out of review.
-     */
     function missedQuestionIndexes() {
-      const indexes = new Set();
-
-      missMarks.forEach((count, index) => {
-        if (count > 0) {
-          indexes.add(index);
-        }
-      });
-
-      answers.forEach((answer, index) => {
-        if (!answer.correct) {
-          indexes.add(index);
-        }
-      });
-
-      return Array.from(indexes).sort((left, right) => left - right);
+      return Array.from(missMarks.keys()).sort((left, right) => left - right);
     }
 
     function missedQuestionStatus(index) {
@@ -1282,12 +937,7 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       if (!response) {
         return "Queued for retry";
       }
-      if (!response.correct) {
-        return "Still incorrect";
-      }
-      return isMastered(index)
-        ? "Learned (correct twice in a row)"
-        : "Correct once — needs one more to leave the drill queue";
+      return response.correct ? "Corrected after retry" : "Still incorrect";
     }
 
     function questionStatusText(index) {
@@ -1304,16 +954,30 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           : "Not answered yet";
     }
 
+    function pendingMissedCount() {
+      return missedQuestionIndexes().filter((index) => {
+        const response = answers.get(index);
+        return !response || !response.correct;
+      }).length;
+    }
+
+    function correctedMissedCount() {
+      return missedQuestionIndexes().filter((index) => {
+        const response = answers.get(index);
+        return Boolean(response && response.correct);
+      }).length;
+    }
+
     function updateMissedControls() {
-      const totalMissed = missedQuestionIndexes().length;
-      const stillLearning = drillIndexes().length;
-      const learned = missedQuestionIndexes().filter((index) => isMastered(index)).length;
+      const totalMissed = missMarks.size;
+      const pendingMissed = pendingMissedCount();
+      const correctedMissed = correctedMissedCount();
 
       missedButton.textContent = "Missed questions (" + totalMissed + ")";
       missedButton.disabled = totalMissed === 0;
       missedTotalStat.textContent = totalMissed + " missed question" + (totalMissed === 1 ? "" : "s") + " recorded";
-      missedPendingStat.textContent = stillLearning + " still in the drill queue";
-      missedCorrectedStat.textContent = learned + " learned (correct twice in a row)";
+      missedPendingStat.textContent = pendingMissed + " still need retry";
+      missedCorrectedStat.textContent = correctedMissed + " corrected after retry";
     }
 
     function renderIndex() {
@@ -1412,178 +1076,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       }
     }
 
-    function setSectionText(section, node, value) {
-      const text = typeof value === "string" ? value.trim() : "";
-      node.textContent = text;
-      section.hidden = text.length === 0;
-      return text.length > 0;
-    }
-
-    function renderReview(question, answer) {
-      const review = question.review;
-      const hasReview = Boolean(review) && Array.isArray(review.optionRationales);
-      const selectedIndex = answer ? question.options.indexOf(answer.selected) : -1;
-      const isWrong = Boolean(answer) && !answer.correct;
-
-      reviewToggle.hidden = !answer;
-      reviewPanel.hidden = !answer || reviewCollapsed;
-      reviewToggle.textContent = reviewCollapsed ? "Show deep review" : "Hide deep review";
-
-      if (!answer) {
-        return;
-      }
-
-      // Highest-value line first: the learner's own mistake, named.
-      const yourPickText =
-        hasReview && selectedIndex >= 0 ? review.optionRationales[selectedIndex] : "";
-      if (isWrong && yourPickText) {
-        reviewYourPickHeading.textContent = 'Why "' + answer.selected + '" is wrong';
-        reviewYourPickText.textContent = yourPickText;
-        reviewYourPick.hidden = false;
-      } else if (isWrong) {
-        reviewYourPickHeading.textContent = 'Why "' + answer.selected + '" is wrong';
-        reviewYourPickText.textContent =
-          'The correct answer is "' + question.correctAnswer + '". ' + question.explanation;
-        reviewYourPick.hidden = false;
-      } else {
-        reviewYourPick.hidden = true;
-      }
-
-      if (!hasReview) {
-        reviewCoreIdeaSection.hidden = true;
-        reviewWhyCorrectSection.hidden = true;
-        reviewOptionsSection.hidden = true;
-        reviewFactsSection.hidden = true;
-        reviewTrapSection.hidden = true;
-        reviewQuoteSection.hidden = true;
-        return;
-      }
-
-      setSectionText(reviewCoreIdeaSection, reviewCoreIdea, review.coreIdea);
-
-      reviewWhyCorrectHeading.textContent = 'Why "' + question.correctAnswer + '" is right';
-      setSectionText(reviewWhyCorrectSection, reviewWhyCorrect, review.whyCorrect);
-
-      reviewOptions.innerHTML = "";
-      let renderedOptions = 0;
-      question.options.forEach((option, index) => {
-        const rationale = review.optionRationales[index];
-        if (!rationale || (isWrong && index === selectedIndex)) {
-          return;
-        }
-
-        const wrapper = document.createElement("div");
-        wrapper.className = "review-option";
-
-        const label = document.createElement("strong");
-        label.textContent =
-          option +
-          (option === question.correctAnswer ? " — correct" : "") +
-          (!isWrong && index === selectedIndex ? " — your answer" : "");
-
-        const body = document.createElement("p");
-        body.style.margin = "0";
-        body.textContent = rationale;
-
-        wrapper.appendChild(label);
-        wrapper.appendChild(body);
-        reviewOptions.appendChild(wrapper);
-        renderedOptions += 1;
-      });
-      reviewOptionsSection.hidden = renderedOptions === 0;
-
-      reviewFacts.innerHTML = "";
-      const facts = Array.isArray(review.keyFacts) ? review.keyFacts : [];
-      facts.forEach((fact) => {
-        if (!fact) {
-          return;
-        }
-        const item = document.createElement("li");
-        item.textContent = fact;
-        reviewFacts.appendChild(item);
-      });
-      reviewMemoryHook.textContent = review.memoryHook || "";
-      reviewFactsSection.hidden = facts.length === 0 && !review.memoryHook;
-
-      setSectionText(reviewTrapSection, reviewTrap, review.commonConfusion);
-      setSectionText(reviewQuoteSection, reviewQuote, review.sourceQuote);
-    }
-
-    function renderResults() {
-      const total = payload.questions.length;
-      const answered = [];
-      for (let index = 0; index < total; index += 1) {
-        if (answers.has(index)) {
-          answered.push(index);
-        }
-      }
-
-      const firstTryCorrect = answered.filter(
-        (index) => answers.get(index).correct && getMissMarkCount(index) === 0
-      ).length;
-      const missed = answered.filter((index) => getMissMarkCount(index) > 0).length;
-      const mastered = answered.filter((index) => isMastered(index)).length;
-      const accuracy = answered.length === 0 ? 0 : Math.round((firstTryCorrect / answered.length) * 100);
-
-      resultScore.textContent = accuracy + "%";
-      resultCorrect.textContent = String(firstTryCorrect);
-      resultMissed.textContent = String(missed);
-      resultMastered.textContent = String(mastered);
-
-      const remaining = drillIndexes().length;
-      resultSummary.textContent =
-        "Answered " +
-        answered.length +
-        " of " +
-        total +
-        " questions. " +
-        (remaining === 0
-          ? "Nothing left in the drill queue — every question you missed has been answered correctly twice in a row."
-          : remaining +
-            " question" +
-            (remaining === 1 ? "" : "s") +
-            " still need" +
-            (remaining === 1 ? "s" : "") +
-            " two correct answers in a row before counting as learned.");
-
-      const byFile = new Map();
-      for (let index = 0; index < total; index += 1) {
-        const file = payload.questions[index].source.file || "Unknown source";
-        const bucket = byFile.get(file) || { correct: 0, answered: 0, total: 0 };
-        bucket.total += 1;
-        if (answers.has(index)) {
-          bucket.answered += 1;
-          if (answers.get(index).correct && getMissMarkCount(index) === 0) {
-            bucket.correct += 1;
-          }
-        }
-        byFile.set(file, bucket);
-      }
-
-      resultBreakdown.innerHTML = "";
-      byFile.forEach((bucket, file) => {
-        const row = document.createElement("div");
-        row.className = "question-row";
-        const heading = document.createElement("em");
-        heading.textContent = file;
-        const body = document.createElement("span");
-        body.textContent =
-          bucket.correct +
-          " first-try correct of " +
-          bucket.answered +
-          " answered (" +
-          bucket.total +
-          " total)";
-        row.appendChild(heading);
-        row.appendChild(body);
-        resultBreakdown.appendChild(row);
-      });
-
-      resultDrillButton.disabled = remaining === 0;
-      resultDrillButton.textContent =
-        remaining === 0 ? "Nothing left to drill" : "Drill the " + remaining + " you missed";
-    }
-
     function renderQuestion() {
       const question = payload.questions[currentIndex];
       const storedAnswer = answers.get(currentIndex);
@@ -1616,22 +1108,10 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
         if (answer) {
           optionButton.disabled = true;
           optionButton.classList.add("is-selected");
-
-          const mark = document.createElement("span");
-          mark.className = "option-mark";
-
           if (option === question.correctAnswer) {
             optionButton.classList.add("correct");
-            mark.textContent = "\u2713 ";
-            optionButton.textContent = "";
-            optionButton.appendChild(mark);
-            optionButton.appendChild(document.createTextNode(option));
           } else if (option === answer.selected) {
             optionButton.classList.add("incorrect");
-            mark.textContent = "\u2717 ";
-            optionButton.textContent = "";
-            optionButton.appendChild(mark);
-            optionButton.appendChild(document.createTextNode(option));
           }
         } else {
           optionButton.addEventListener("click", () => {
@@ -1643,15 +1123,12 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
               correct: isCorrect,
               attempts: previousAnswer && typeof previousAnswer.attempts === "number" ? previousAnswer.attempts + 1 : 1
             });
-            recordBox(currentIndex, isCorrect);
             if (!isCorrect) {
               incrementMissMark(currentIndex);
-              acknowledged.delete(currentIndex);
             }
             if (isCorrect) {
               playSelectedCorrectSound();
             }
-            reviewCollapsed = isCorrect;
             saveQuizState();
             updateMissedControls();
             renderIndex();
@@ -1664,26 +1141,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       });
 
       feedback.classList.toggle("active", Boolean(answer));
-
-      if (answer) {
-        verdict.textContent = answer.correct
-          ? "Correct"
-          : 'Not quite \u2014 you chose "' + answer.selected + '"';
-        verdict.classList.toggle("is-correct", answer.correct);
-        verdict.classList.toggle("is-incorrect", !answer.correct);
-      } else {
-        verdict.textContent = "";
-        verdict.classList.remove("is-correct", "is-incorrect");
-      }
-
-      renderReview(question, answer);
-
-      // A wrong answer has to be acknowledged before moving on. It is a small
-      // forced beat, and it is what stops the reflexive click through to the
-      // next question without reading why the answer was wrong.
-      const needsAck = Boolean(answer) && !answer.correct && !acknowledged.has(currentIndex);
-      ackRow.hidden = !needsAck;
-
       renderMissMarks();
       nextButton.textContent = isMissedReview
         ? missedPosition < missedIndexes.length - 1
@@ -1691,39 +1148,11 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
           : "Return to missed questions"
         : currentIndex < payload.questions.length - 1
           ? "Next question"
-          : "See results";
-      nextButton.disabled = !answer || needsAck;
+          : "Return to index";
+      nextButton.disabled = !answer;
       retryButton.style.display = answer && !answer.correct ? "inline-block" : "none";
       returnButton.textContent = isMissedReview ? "Back to missed questions" : "Back to index";
     }
-
-    ackButton.addEventListener("click", () => {
-      acknowledged.add(currentIndex);
-      saveQuizState();
-      renderQuestion();
-    });
-
-    reviewToggle.addEventListener("click", () => {
-      reviewCollapsed = !reviewCollapsed;
-      renderQuestion();
-    });
-
-    resultIndexButton.addEventListener("click", () => {
-      navigationMode = "all";
-      showView("index");
-    });
-
-    resultDrillButton.addEventListener("click", () => {
-      const pending = drillIndexes();
-      if (pending.length === 0) {
-        return;
-      }
-      navigationMode = "missed";
-      currentIndex = pending[0];
-      enterRetryMode(currentIndex);
-      renderQuestion();
-      showView("quiz");
-    });
 
     nextButton.addEventListener("click", () => {
       if (navigationMode === "missed") {
@@ -1744,9 +1173,7 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
         renderQuestion();
         return;
       }
-
-      renderResults();
-      showView("results");
+      showView("index");
     });
 
     retryButton.addEventListener("click", () => {
@@ -1782,9 +1209,6 @@ export function quizToHtml(payload: QuizPayload, title = "Interactive Quiz"): st
       answers.clear();
       missMarks.clear();
       retryQueue.clear();
-      boxes.clear();
-      acknowledged.clear();
-      reviewCollapsed = false;
       navigationMode = "all";
       saveQuizState();
       updateMissedControls();

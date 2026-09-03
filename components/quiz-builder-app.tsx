@@ -1,17 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { AiConnectionPanel } from "@/components/ai-connection-panel";
-import { AuditPanel } from "@/components/audit-panel";
-import { CoveragePanel } from "@/components/coverage-panel";
-import { EnrichmentPanel } from "@/components/enrichment-panel";
+import { useMemo, useState, type DragEvent } from "react";
 import { FileStatusList } from "@/components/file-status-list";
 import { QuizEditor } from "@/components/quiz-editor";
 import { StageIndicator } from "@/components/stage-indicator";
-import { fetchModelList } from "@/lib/ai/client";
-import { autofixQuestion } from "@/lib/ai/run-autofix";
-import { buildEnrichmentGroups, enrichGroup } from "@/lib/ai/run-enrichment";
-import { generateBatch, type BatchOutcome } from "@/lib/ai/run-quiz-generation";
 import { processPdfBatch } from "@/lib/pdf/process-pdfs";
 import { buildMasterPrompt } from "@/lib/prompt/build-master-prompt";
 import {
@@ -19,26 +11,20 @@ import {
   PROMPT_DENSITY_PRESETS,
   QUESTIONS_PER_PROMPT_OPTIONS
 } from "@/lib/prompt/modes";
-import { buildPromptBatches, type PromptPlan } from "@/lib/prompt/plan";
-import { auditQuiz } from "@/lib/quiz/audit";
-import { computeCoverage } from "@/lib/quiz/coverage";
+import { buildPromptBatches } from "@/lib/prompt/plan";
 import { quizToCsv, quizToJson } from "@/lib/quiz/export";
 import { quizToHtml } from "@/lib/quiz/html";
-import { describeIngestOutcome, ingestBatchResponse } from "@/lib/quiz/ingest";
+import { mergeQuizPayload } from "@/lib/quiz/merge";
 import {
   formatOptionRange,
   normalizeOptionCount,
   OPTION_COUNT_OPTIONS,
   optionLabels
 } from "@/lib/quiz/options";
-import { clearWorkspace, loadWorkspace, saveWorkspace } from "@/lib/storage/workspace";
+import { parseQuizResponse } from "@/lib/quiz/parse";
+import { rebalanceAnswerPositions } from "@/lib/quiz/quality";
 import type {
-  AiConnectionSettings,
-  AiConnectionState,
-  AiProviderKind,
   ChunkOrdering,
-  CognitiveMix,
-  CoverageMode,
   Difficulty,
   FileProcessingStatus,
   OptionCount,
@@ -48,11 +34,8 @@ import type {
   PromptBatchState,
   PromptDensity,
   QuizPayload,
-  QuizQuestion,
   QuizSettings,
-  ResponseFormat,
-  SourceChunk,
-  SourceDetail
+  ResponseFormat
 } from "@/lib/types";
 
 const QUESTION_COUNT_OPTIONS = [5, 10, 25, 50, 100, 200, 300, 500, 1000];
@@ -70,30 +53,7 @@ const DEFAULT_SETTINGS: QuizSettings = {
   questionStyle: "",
   customPromptInstructions: "",
   ocrEnabled: true,
-  chunkOrdering: "best_match",
-  sourceDetail: "compressed",
-  coverageMode: "coverage_first",
-  cognitiveMix: "balanced"
-};
-
-const DEFAULT_AI_CONNECTION: AiConnectionSettings = {
-  baseUrl: "http://localhost:11434",
-  model: "",
-  apiKey: "",
-  temperature: 0.2,
-  maxOutputTokens: 8192,
-  contextTokens: 16384,
-  concurrency: 1,
-  structuredOutput: "auto",
-  reasoning: "off",
-  requestTimeoutMs: 180_000
-};
-
-const DEFAULT_AI_STATE: AiConnectionState = {
-  status: "unknown",
-  kind: null,
-  models: [],
-  message: ""
+  chunkOrdering: "best_match"
 };
 
 function formatBytes(bytes: number): string {
@@ -194,8 +154,7 @@ function createPromptBatchState(batches: PromptBatch[], settings: QuizSettings):
 function buildPromptText(
   batch: PromptBatchState,
   totalBatchCount: number,
-  previousQuestions: string[],
-  settings: Pick<QuizSettings, "sourceDetail" | "cognitiveMix">
+  previousQuestions: string[]
 ): string {
   return (
     batch.promptOverride ??
@@ -209,49 +168,9 @@ function buildPromptText(
       responseFormat: batch.responseFormat,
       optionCount: batch.optionCount,
       questionStyle: batch.questionStyle,
-      customPromptInstructions: batch.customPromptInstructions,
-      sourceDetail: settings.sourceDetail,
-      cognitiveMix: settings.cognitiveMix
+      customPromptInstructions: batch.customPromptInstructions
     })
   );
-}
-
-/**
- * Dedupe context for a batch: prior questions drawn from the same chunks or
- * files, which is where repetition actually happens, rather than simply the
- * most recent ones.
- */
-function relevantPreviousQuestions(
-  quiz: QuizPayload | null,
-  batch: PromptBatchState | null,
-  limit = 40
-): string[] {
-  const questions = quiz?.questions ?? [];
-  if (questions.length === 0) {
-    return [];
-  }
-  if (!batch) {
-    return questions.map((question) => question.question).slice(-limit);
-  }
-
-  const chunkIds = new Set(batch.chunks.map((chunk) => chunk.chunkId));
-  const fileNames = new Set(batch.chunks.map((chunk) => chunk.fileName));
-
-  const sameChunk: string[] = [];
-  const sameFile: string[] = [];
-  const rest: string[] = [];
-
-  for (const question of questions) {
-    if (chunkIds.has(question.source.chunkId)) {
-      sameChunk.push(question.question);
-    } else if (fileNames.has(question.source.file)) {
-      sameFile.push(question.question);
-    } else {
-      rest.push(question.question);
-    }
-  }
-
-  return [...sameChunk, ...sameFile.slice(-limit), ...rest.slice(-limit)].slice(0, limit);
 }
 
 function nextPendingBatchIndex(batches: PromptBatchState[]): number {
@@ -321,18 +240,6 @@ export function QuizBuilderApp() {
   const [copyMessage, setCopyMessage] = useState("");
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
-  const [connection, setConnection] = useState<AiConnectionSettings>(DEFAULT_AI_CONNECTION);
-  const [aiState, setAiState] = useState<AiConnectionState>(DEFAULT_AI_STATE);
-  const [aiRunLabel, setAiRunLabel] = useState("");
-  const [pendingPlan, setPendingPlan] = useState<{ coverage: PromptPlan; capped: PromptPlan } | null>(null);
-  const [isAiRunning, setIsAiRunning] = useState(false);
-  const [enrichmentLabel, setEnrichmentLabel] = useState("");
-  const [isEnriching, setIsEnriching] = useState(false);
-  const [autosaveMessage, setAutosaveMessage] = useState("");
-  const [restoredAt, setRestoredAt] = useState("");
-  const [editorFlaggedOnly, setEditorFlaggedOnly] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const hydratedRef = useRef(false);
 
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
   const plannedQuestionCount = useMemo(
@@ -343,28 +250,16 @@ export function QuizBuilderApp() {
     () => promptBatches.filter((batch) => batch.status === "parsed").length,
     [promptBatches]
   );
-  const pendingBatchCount = useMemo(
-    () => promptBatches.filter((batch) => batch.status === "pending").length,
-    [promptBatches]
-  );
   const currentBatch = promptBatches[currentBatchIndex] ?? null;
+  const previousQuestions = useMemo(
+    () => (quiz?.questions ?? []).map((question) => question.question).slice(-25),
+    [quiz]
+  );
   const currentPrompt = currentBatch
-    ? buildPromptText(
-        currentBatch,
-        promptBatches.length,
-        relevantPreviousQuestions(quiz, currentBatch),
-        settings
-      )
+    ? buildPromptText(currentBatch, promptBatches.length, previousQuestions)
     : "";
 
-  const sourceChunks = useMemo<SourceChunk[]>(() => result?.chunks ?? [], [result]);
-  const coverageReport = useMemo(() => computeCoverage(quiz, sourceChunks), [quiz, sourceChunks]);
-  const auditReport = useMemo(() => auditQuiz(quiz, sourceChunks), [quiz, sourceChunks]);
-  const canUseAi = aiState.status === "connected" && connection.model.trim().length > 0;
-  const isAnyRunActive = isAiRunning || isEnriching;
-
   function resetPromptWorkflow(): void {
-    setPendingPlan(null);
     setPromptBatches([]);
     setCurrentBatchIndex(0);
     setValidationErrors([]);
@@ -406,94 +301,27 @@ export function QuizBuilderApp() {
     onPickFiles(event.dataTransfer.files);
   }
 
-  const planOptions = useCallback(
-    () => ({
+  function buildPromptQueue(processed: ProcessedBatchResult) {
+    const batches = buildPromptBatches(processed.chunks, settings.targetQuestionCount, {
       questionsPerPrompt: settings.questionsPerPrompt,
       promptDensity: settings.promptDensity,
       responseFormat: settings.responseFormat,
-      chunkOrdering: settings.chunkOrdering,
-      sourceDetail: settings.sourceDetail,
-      coverageMode: settings.coverageMode
-    }),
-    [settings]
-  );
-
-  function describePlan(plan: PromptPlan, coverageMode: CoverageMode): string {
-    const coverageNote =
-      coverageMode === "coverage_first"
-        ? plan.plannedQuestionCount > settings.targetQuestionCount
-          ? ` Coverage-first raised the count from ${settings.targetQuestionCount} to ${plan.plannedQuestionCount} so every source chunk gets at least one question.`
-          : " Every source chunk is covered."
-        : plan.droppedChunkCount > 0
-          ? ` ${plan.droppedChunkCount} chunk${plan.droppedChunkCount === 1 ? "" : "s"} will not be used at this target. Full coverage needs about ${plan.fullCoverageQuestionCount} questions.`
-          : " Every source chunk is covered.";
-
-    const shortfallNote =
-      plan.plannedQuestionCount < settings.targetQuestionCount
-        ? ` Your target of ${settings.targetQuestionCount} does not fit: ${plan.batches.length} prompt${plan.batches.length === 1 ? "" : "s"} at ${settings.questionsPerPrompt} questions each caps this run at ${plan.plannedQuestionCount}. Raise Questions Per Prompt, or add more source material, to plan more.`
-        : "";
-
-    return `Prepared ${plan.batches.length} prompt${plan.batches.length === 1 ? "" : "s"} for ${plan.plannedQuestionCount} planned questions at ${settings.questionsPerPrompt} per prompt in ${PROMPT_DENSITY_PRESETS[settings.promptDensity].label} mode using ${settings.responseFormat === "compact" ? "compact" : "standard"} JSON with ${settings.optionCount} choices per question, ${chunkOrderingLabel(settings.chunkOrdering)}, and ${settings.sourceDetail === "full" ? "full source text" : "compressed source text"}.${coverageNote}${shortfallNote}`;
-  }
-
-  function commitPlan(plan: PromptPlan, coverageMode: CoverageMode, note = ""): void {
-    setPromptBatches(createPromptBatchState(plan.batches, settings));
-    setCurrentBatchIndex(0);
-    setPendingPlan(null);
-    setBatchMessage(`${describePlan(plan, coverageMode)}${note}`);
-  }
-
-  /**
-   * Builds the queue, pausing for a decision when covering the whole source
-   * would cost far more than the requested question count.
-   *
-   * Silently inflating a target of 50 into 267 questions is a big commitment to
-   * make on someone's behalf: it is five times the generation time.
-   */
-  function buildPromptQueue(processed: ProcessedBatchResult): boolean {
-    const coveragePlan = buildPromptBatches(processed.chunks, settings.targetQuestionCount, {
-      ...planOptions(),
-      coverageMode: "coverage_first"
+      chunkOrdering: settings.chunkOrdering
     });
-    const cappedPlan = buildPromptBatches(processed.chunks, settings.targetQuestionCount, {
-      ...planOptions(),
-      coverageMode: "target_first"
-    });
-
-    if (
-      settings.coverageMode === "coverage_first" &&
-      coveragePlan.plannedQuestionCount > cappedPlan.plannedQuestionCount
-    ) {
-      setPendingPlan({ coverage: coveragePlan, capped: cappedPlan });
-      setBatchMessage(null);
-      return false;
-    }
-
-    commitPlan(
-      settings.coverageMode === "coverage_first" ? coveragePlan : cappedPlan,
-      settings.coverageMode
+    const nextBatches = createPromptBatchState(batches, settings);
+    const requestedPromptCount = Math.max(
+      1,
+      Math.ceil(settings.targetQuestionCount / normalizeQuestionsPerPrompt(settings.questionsPerPrompt))
     );
-    return true;
-  }
-
-  /** Builds a queue that targets only the chunks with no question yet. */
-  function buildGapFillQueue(): void {
-    const uncovered = coverageReport.uncoveredChunks;
-    if (uncovered.length === 0) {
-      return;
-    }
-
-    const plan = buildPromptBatches(uncovered, uncovered.length, {
-      ...planOptions(),
-      coverageMode: "coverage_first"
-    });
-    const nextBatches = createPromptBatchState(plan.batches, settings);
+    const sourceSafetyNote =
+      nextBatches.length > requestedPromptCount
+        ? ` Source volume required ${nextBatches.length - requestedPromptCount} extra prompt${nextBatches.length - requestedPromptCount === 1 ? "" : "s"} to keep each batch usable.`
+        : "";
 
     setPromptBatches(nextBatches);
     setCurrentBatchIndex(0);
-    setStage("waiting_for_ai");
     setBatchMessage(
-      `Built ${plan.batches.length} gap-fill prompt${plan.batches.length === 1 ? "" : "s"} covering the ${uncovered.length} chunk${uncovered.length === 1 ? "" : "s"} that produced no questions.`
+      `Prepared ${nextBatches.length} prompt${nextBatches.length === 1 ? "" : "s"} for ${nextBatches.reduce((sum, batch) => sum + batch.questionCount, 0)} planned questions at ${settings.questionsPerPrompt} per prompt in ${PROMPT_DENSITY_PRESETS[settings.promptDensity].label} mode using ${settings.responseFormat === "compact" ? "compact" : "standard"} JSON with ${settings.optionCount} choices per question and ${chunkOrderingLabel(settings.chunkOrdering)}.${sourceSafetyNote}`
     );
   }
 
@@ -531,8 +359,8 @@ export function QuizBuilderApp() {
 
       setStage("building_prompt");
       setResult(processed);
-      const committed = buildPromptQueue(processed);
-      setStage(committed ? "waiting_for_ai" : "building_prompt");
+      buildPromptQueue(processed);
+      setStage("waiting_for_ai");
       setProgressPercent(100);
     } catch (error) {
       setStage("failed");
@@ -551,8 +379,8 @@ export function QuizBuilderApp() {
     setValidationErrors([]);
     setStage("building_prompt");
     resetPromptWorkflow();
-    const committed = buildPromptQueue(result);
-    setStage(committed ? "waiting_for_ai" : "building_prompt");
+    buildPromptQueue(result);
+    setStage("waiting_for_ai");
   }
 
   function updateCurrentPromptOverride(value: string) {
@@ -577,52 +405,6 @@ export function QuizBuilderApp() {
     );
   }
 
-  /**
-   * Applies one parsed batch response to the workspace.
-   *
-   * Shared by the manual paste button and the local-AI runner so the two paths
-   * cannot drift apart. Returns the updated quiz for callers that chain batches.
-   */
-  const applyBatchResponse = useCallback(
-    (
-      batchIndex: number,
-      rawResponse: string,
-      baseQuiz: QuizPayload | null,
-      baseBatches: PromptBatchState[]
-    ): { quiz: QuizPayload | null; batches: PromptBatchState[]; message: string; errors: string[] } => {
-      const batch = baseBatches[batchIndex];
-      if (!batch) {
-        return { quiz: baseQuiz, batches: baseBatches, message: "", errors: ["Batch no longer exists."] };
-      }
-
-      const outcome = ingestBatchResponse({ quiz: baseQuiz, batch, rawResponse });
-      if (!outcome.ok) {
-        return { quiz: baseQuiz, batches: baseBatches, message: "", errors: outcome.errors };
-      }
-
-      const batches = baseBatches.map((entry, index) =>
-        index === batchIndex
-          ? {
-              ...entry,
-              response: rawResponse,
-              status: "parsed" as const,
-              addedQuestionCount: outcome.addedCount,
-              duplicateQuestionCount: outcome.duplicateCount,
-              qualityNotes: outcome.qualityNotes
-            }
-          : entry
-      );
-
-      return {
-        quiz: outcome.quiz,
-        batches,
-        message: describeIngestOutcome(batch.batchNumber, outcome),
-        errors: []
-      };
-    },
-    []
-  );
-
   function parseCurrentBatch() {
     if (!currentBatch) {
       return;
@@ -631,18 +413,63 @@ export function QuizBuilderApp() {
     setValidationErrors([]);
     setErrorMessage(null);
 
-    const applied = applyBatchResponse(currentBatchIndex, currentBatch.response, quiz, promptBatches);
-    if (applied.errors.length > 0) {
+    const parsed = parseQuizResponse(
+      currentBatch.response,
+      currentBatch.responseFormat,
+      currentBatch.optionCount
+    );
+    if (!parsed.success || !parsed.data) {
       setStage("failed");
-      setValidationErrors(applied.errors);
+      setValidationErrors(parsed.errors);
       return;
     }
 
-    setQuiz(applied.quiz);
-    setPromptBatches(applied.batches);
-    setBatchMessage(applied.message);
+    const parsedQuestionCount = parsed.data.questions.length;
+    const rebalanced = rebalanceAnswerPositions(parsed.data, quiz?.questions.length ?? 0);
+    const mergeResult = mergeQuizPayload(quiz, rebalanced.quiz);
+    const qualityNotes: string[] = [];
+    const countDifference = parsedQuestionCount - currentBatch.questionCount;
 
-    const nextIndex = nextPendingBatchIndex(applied.batches);
+    if (countDifference !== 0) {
+      qualityNotes.push(
+        countDifference > 0
+          ? `Accepted ${parsedQuestionCount} questions for a target of ${currentBatch.questionCount} (${countDifference} over target).`
+          : `Accepted ${parsedQuestionCount} questions for a target of ${currentBatch.questionCount} (${Math.abs(countDifference)} under target).`
+      );
+    }
+
+    if (rebalanced.report.skewDetected) {
+      qualityNotes.push(
+        `Detected answer-position skew and redistributed correct options across ${formatOptionRange(currentBatch.optionCount)}.`
+      );
+    }
+
+    if (rebalanced.report.duplicateOptionQuestionCount > 0) {
+      qualityNotes.push(
+        `Detected ${rebalanced.report.duplicateOptionQuestionCount} question${rebalanced.report.duplicateOptionQuestionCount === 1 ? "" : "s"} with duplicate option text. Review before export.`
+      );
+    }
+
+    const updatedBatches = promptBatches.map((batch, index) =>
+      index === currentBatchIndex
+        ? {
+            ...batch,
+            status: "parsed" as const,
+            addedQuestionCount: mergeResult.addedCount,
+            duplicateQuestionCount: mergeResult.duplicateCount,
+            qualityNotes
+          }
+        : batch
+    );
+
+    setQuiz(mergeResult.quiz);
+    setPromptBatches(updatedBatches);
+    setValidationErrors([]);
+    setBatchMessage(
+      `Prompt ${currentBatch.batchNumber} accepted ${parsedQuestionCount} question${parsedQuestionCount === 1 ? "" : "s"} for a target of ${currentBatch.questionCount} and added ${mergeResult.addedCount} question${mergeResult.addedCount === 1 ? "" : "s"}${mergeResult.duplicateCount > 0 ? ` while skipping ${mergeResult.duplicateCount} duplicate${mergeResult.duplicateCount === 1 ? "" : "s"}` : ""}.${qualityNotes.length > 0 ? ` ${qualityNotes.join(" ")}` : ""}`
+    );
+
+    const nextIndex = nextPendingBatchIndex(updatedBatches);
     if (nextIndex >= 0) {
       setCurrentBatchIndex(nextIndex);
       setStage("waiting_for_ai");
@@ -650,424 +477,6 @@ export function QuizBuilderApp() {
     }
 
     setStage("parsed_success");
-  }
-
-  function stopRun() {
-    abortRef.current?.abort();
-    abortRef.current = null;
-  }
-
-  async function onTestConnection() {
-    setAiState({ ...DEFAULT_AI_STATE, status: "checking", message: "Checking..." });
-
-    try {
-      const discovered = await fetchModelList(connection.baseUrl);
-      setAiState({
-        status: "connected",
-        kind: discovered.kind,
-        models: discovered.models,
-        message: ""
-      });
-      setConnection((previous) => ({
-        ...previous,
-        // Adopt the URL discovery actually resolved to, so the field shows the
-        // endpoint in use (e.g. a bare host:1234 becomes host:1234/v1).
-        baseUrl: discovered.baseUrl || previous.baseUrl,
-        model:
-          previous.model && discovered.models.includes(previous.model)
-            ? previous.model
-            : discovered.models[0] ?? previous.model
-      }));
-      // Local models have the context budget for full source text; the manual
-      // copy/paste flow does not, so only flip the default once connected.
-      setSettings((previous) =>
-        previous.sourceDetail === "compressed" ? { ...previous, sourceDetail: "full" } : previous
-      );
-    } catch (error) {
-      setAiState({
-        status: "error",
-        kind: null,
-        models: [],
-        message: error instanceof Error ? error.message : "Connection failed."
-      });
-    }
-  }
-
-  /** Runs every pending batch through the local model. */
-  async function runAllPendingBatches() {
-    if (!canUseAi || aiState.kind === null) {
-      return;
-    }
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsAiRunning(true);
-    setErrorMessage(null);
-    setValidationErrors([]);
-    setStage("waiting_for_ai");
-
-    let workingQuiz = quiz;
-    let workingBatches = promptBatches;
-    const failures: string[] = [];
-    const startedAt = Date.now();
-
-    const pendingIndexes = workingBatches
-      .map((batch, index) => (batch.status === "pending" ? index : -1))
-      .filter((index) => index >= 0);
-
-    // Streamed deltas arrive per token; writing state that often would thrash
-    // React, so progress accumulates in a ref and is flushed on a timer.
-    const liveChars = new Map<number, number>();
-    const liveThinking = new Map<number, number>();
-    let totalReasoningChars = 0;
-    let totalContentChars = 0;
-    const outcomes = new Map<number, BatchOutcome>();
-    let completed = 0;
-    let ingestCursor = 0;
-
-    const describeProgress = () => {
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const streamed = [...liveChars.values()].reduce((sum, chars) => sum + chars, 0);
-      const thinking = [...liveThinking.values()].reduce((sum, chars) => sum + chars, 0);
-      const active = liveChars.size;
-      const inFlight =
-        active > 1
-          ? `${active} prompts in flight`
-          : `prompt ${(pendingIndexes[Math.min(completed, pendingIndexes.length - 1)] ?? 0) + 1} of ${workingBatches.length}`;
-      // Reasoning models think for a long time before writing anything, so say
-      // so rather than showing a frozen zero.
-      const written =
-        streamed === 0 && thinking > 0
-          ? `thinking (${thinking.toLocaleString()} characters of reasoning)`
-          : `${streamed.toLocaleString()} characters received${thinking > 0 ? ` after ${thinking.toLocaleString()} of reasoning` : ""}`;
-      return `Generating: ${inFlight}. ${completed}/${pendingIndexes.length} done, ${written}, ${elapsed}s elapsed.`;
-    };
-
-    const ticker = window.setInterval(() => {
-      if (!controller.signal.aborted) {
-        setAiRunLabel(describeProgress());
-      }
-    }, 300);
-
-    // Completions can land out of order when running in parallel, but merging
-    // must stay deterministic: dedupe and answer-position balancing both depend
-    // on the order questions arrive. So ingest strictly in batch order.
-    const drain = () => {
-      while (ingestCursor < pendingIndexes.length) {
-        const index = pendingIndexes[ingestCursor];
-        const outcome = outcomes.get(index);
-        if (!outcome) {
-          return;
-        }
-        ingestCursor += 1;
-
-        const batch = workingBatches[index];
-        if (!outcome.ok) {
-          failures.push(`Prompt ${batch.batchNumber}: ${outcome.errors.join(" ")}`);
-          workingBatches = workingBatches.map((entry, entryIndex) =>
-            entryIndex === index ? { ...entry, qualityNotes: outcome.errors } : entry
-          );
-          setPromptBatches(workingBatches);
-          continue;
-        }
-
-        const applied = applyBatchResponse(index, outcome.rawResponse, workingQuiz, workingBatches);
-        if (applied.errors.length > 0) {
-          failures.push(`Prompt ${batch.batchNumber}: ${applied.errors.join(" ")}`);
-          continue;
-        }
-
-        workingQuiz = applied.quiz;
-        workingBatches = applied.batches;
-        setQuiz(workingQuiz);
-        setPromptBatches(workingBatches);
-        setBatchMessage(applied.message);
-      }
-    };
-
-    const concurrency = Math.max(1, Math.min(4, Math.round(connection.concurrency)));
-    let cursor = 0;
-
-    const worker = async () => {
-      for (;;) {
-        const position = cursor;
-        cursor += 1;
-        if (position >= pendingIndexes.length || controller.signal.aborted) {
-          return;
-        }
-
-        const index = pendingIndexes[position];
-        const batch = workingBatches[index];
-        if (concurrency === 1) {
-          setCurrentBatchIndex(index);
-        }
-        liveChars.set(index, 0);
-        liveThinking.set(index, 0);
-
-        const promptText = buildPromptText(
-          batch,
-          workingBatches.length,
-          relevantPreviousQuestions(workingQuiz, batch),
-          settings
-        );
-
-        const outcome = await generateBatch(index, batch, promptText, {
-          connection,
-          kind: aiState.kind as AiProviderKind,
-          signal: controller.signal,
-          onProgress: ({ chars, reasoningChars }) => {
-            liveChars.set(index, chars);
-            liveThinking.set(index, reasoningChars);
-          }
-        });
-
-        totalContentChars += liveChars.get(index) ?? 0;
-        totalReasoningChars += liveThinking.get(index) ?? 0;
-        liveChars.delete(index);
-        liveThinking.delete(index);
-        completed += 1;
-        outcomes.set(index, outcome);
-        drain();
-      }
-    };
-
-    try {
-      await Promise.all(Array.from({ length: concurrency }, () => worker()));
-      drain();
-    } finally {
-      window.clearInterval(ticker);
-      const stopped = controller.signal.aborted;
-      abortRef.current = null;
-      setIsAiRunning(false);
-
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const pending = nextPendingBatchIndex(workingBatches);
-      const collected = workingQuiz?.questions.length ?? 0;
-
-      // Extended reasoning is usually wasted effort for structured extraction,
-      // and it is the single biggest cause of a run feeling interminable.
-      const reasoningNote =
-        totalReasoningChars > totalContentChars && totalReasoningChars > 0
-          ? ` Most of that time was this model thinking (${totalReasoningChars.toLocaleString()} characters of reasoning vs ${totalContentChars.toLocaleString()} of answer). A model without extended reasoning will be far faster for this.`
-          : "";
-
-      setAiRunLabel(
-        stopped
-          ? `Stopped after ${elapsed}s. ${collected} questions collected so far.`
-          : failures.length > 0
-            ? `Finished in ${elapsed}s with ${failures.length} failed prompt${failures.length === 1 ? "" : "s"}. ${collected} questions collected.${reasoningNote}`
-            : `Done in ${elapsed}s. ${collected} questions collected.${reasoningNote}`
-      );
-
-      if (failures.length > 0) {
-        setValidationErrors(failures);
-      }
-
-      if (pending >= 0) {
-        setCurrentBatchIndex(pending);
-        setStage("waiting_for_ai");
-      } else if (!stopped) {
-        setStage("parsed_success");
-      }
-    }
-  }
-
-  async function runEnrichment(onlyMissing: boolean) {
-    if (!quiz || !canUseAi || aiState.kind === null) {
-      return;
-    }
-
-    const groups = buildEnrichmentGroups(quiz, sourceChunks, { onlyMissing });
-    if (groups.length === 0) {
-      setEnrichmentLabel("Every question already has a deep review.");
-      return;
-    }
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsEnriching(true);
-
-    let workingQuestions = [...quiz.questions];
-    const failures: string[] = [];
-    const startedAt = Date.now();
-    let streamedChars = 0;
-    let thinkingChars = 0;
-    let groupCursor = 0;
-
-    const ticker = window.setInterval(() => {
-      if (!controller.signal.aborted) {
-        setEnrichmentLabel(
-          `Writing deep reviews: group ${Math.min(groupCursor + 1, groups.length)} of ${groups.length}, ${
-            streamedChars === 0 && thinkingChars > 0
-              ? `thinking (${thinkingChars.toLocaleString()} characters of reasoning)`
-              : `${streamedChars.toLocaleString()} characters received`
-          }, ${Math.round((Date.now() - startedAt) / 1000)}s elapsed.`
-        );
-      }
-    }, 300);
-
-    try {
-      for (let index = 0; index < groups.length; index += 1) {
-        if (controller.signal.aborted) {
-          break;
-        }
-
-        groupCursor = index;
-
-        const outcome = await enrichGroup(groups[index], {
-          connection,
-          kind: aiState.kind,
-          signal: controller.signal,
-          batchLabel: `Group ${index + 1} of ${groups.length}`,
-          onProgress: ({ chars, reasoningChars }) => {
-            streamedChars = chars;
-            thinkingChars = reasoningChars;
-          }
-        });
-
-        if (!outcome.ok) {
-          failures.push(outcome.errors.join(" "));
-          continue;
-        }
-
-        outcome.questionIndexes.forEach((questionIndex, position) => {
-          workingQuestions[questionIndex] = outcome.questions[position];
-        });
-        setQuiz({ questions: [...workingQuestions] });
-      }
-    } finally {
-      window.clearInterval(ticker);
-      const stopped = controller.signal.aborted;
-      abortRef.current = null;
-      setIsEnriching(false);
-      const enriched = workingQuestions.filter((question) => question.review).length;
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      setEnrichmentLabel(
-        stopped
-          ? `Stopped after ${elapsed}s. ${enriched} of ${workingQuestions.length} questions have deep reviews.`
-          : failures.length > 0
-            ? `Finished in ${elapsed}s with ${failures.length} failed group${failures.length === 1 ? "" : "s"}. ${enriched} of ${workingQuestions.length} questions have deep reviews.`
-            : `Done in ${elapsed}s. All ${enriched} questions have deep reviews.`
-      );
-    }
-  }
-
-  async function runAutoFix() {
-    if (!quiz || !canUseAi || aiState.kind === null) {
-      return;
-    }
-
-    const flagged = auditReport.questions.filter((audit) => audit.flags.length > 0);
-    if (flagged.length === 0) {
-      return;
-    }
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsAiRunning(true);
-
-    const workingQuestions = [...quiz.questions];
-    let fixedCount = 0;
-
-    try {
-      for (let position = 0; position < flagged.length; position += 1) {
-        if (controller.signal.aborted) {
-          break;
-        }
-
-        const audit = flagged[position];
-        setAiRunLabel(`Rewriting flagged question ${position + 1} of ${flagged.length}...`);
-
-        const outcome = await autofixQuestion(
-          audit.index,
-          workingQuestions[audit.index],
-          audit,
-          sourceChunks,
-          { connection, kind: aiState.kind, signal: controller.signal }
-        );
-
-        if (outcome.ok) {
-          workingQuestions[audit.index] = outcome.question;
-          fixedCount += 1;
-          setQuiz({ questions: [...workingQuestions] });
-        }
-      }
-    } finally {
-      abortRef.current = null;
-      setIsAiRunning(false);
-      setAiRunLabel(
-        `Rewrote ${fixedCount} of ${flagged.length} flagged question${flagged.length === 1 ? "" : "s"}. Re-run the enrichment pass for any rewritten question.`
-      );
-    }
-  }
-
-  // Restore a previous session once on mount. Uploaded File objects cannot be
-  // persisted, but the chunks they produced can, so a refresh mid-run does not
-  // cost a re-extract.
-  useEffect(() => {
-    if (hydratedRef.current) {
-      return;
-    }
-    hydratedRef.current = true;
-
-    const saved = loadWorkspace();
-    if (!saved) {
-      return;
-    }
-
-    setSettings(saved.settings);
-    setConnection(saved.connection);
-    setPromptBatches(saved.promptBatches);
-    setQuiz(saved.quiz);
-
-    if (saved.chunks.length > 0) {
-      setResult({
-        chunks: saved.chunks,
-        warnings: [],
-        skippedFiles: [],
-        totalPages: 0,
-        totalSourceFiles: new Set(saved.chunks.map((chunk) => chunk.fileName)).size,
-        fileStatuses: []
-      });
-    }
-
-    if (saved.promptBatches.length > 0) {
-      const pending = nextPendingBatchIndex(saved.promptBatches);
-      setCurrentBatchIndex(pending >= 0 ? pending : 0);
-      setStage(pending >= 0 ? "waiting_for_ai" : "parsed_success");
-    }
-
-    setRestoredAt(saved.savedAt);
-  }, []);
-
-  useEffect(() => {
-    if (!hydratedRef.current) {
-      return;
-    }
-
-    const handle = window.setTimeout(() => {
-      const saved = saveWorkspace({
-        settings,
-        connection,
-        chunks: sourceChunks,
-        promptBatches,
-        quiz
-      });
-      setAutosaveMessage(saved.message);
-    }, 600);
-
-    return () => window.clearTimeout(handle);
-  }, [settings, connection, sourceChunks, promptBatches, quiz]);
-
-  function applyReviewUpdates(updates: { index: number; question: QuizQuestion }[]) {
-    if (!quiz) {
-      return;
-    }
-    const questions = [...quiz.questions];
-    for (const update of updates) {
-      questions[update.index] = update.question;
-    }
-    setQuiz({ questions });
   }
 
   function onDifficultyChange(value: string) {
@@ -1117,29 +526,6 @@ export function QuizBuilderApp() {
           quiz flow editable from source packet to export.
         </p>
       </section>
-
-      {restoredAt ? (
-        <div className="instruction-box">
-          Restored your previous workspace{restoredAt ? ` from ${new Date(restoredAt).toLocaleString()}` : ""}.
-          Uploaded files are not saved, but the extracted source chunks, prompt queue, and collected questions are.{" "}
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              clearWorkspace();
-              setRestoredAt("");
-              setQuiz(null);
-              setResult(null);
-              resetPromptWorkflow();
-              setStage("idle");
-            }}
-          >
-            Discard Restored Workspace
-          </button>
-        </div>
-      ) : null}
-
-      {autosaveMessage ? <div className="error-box">{autosaveMessage}</div> : null}
 
       <section className="panel">
         <h2>1) Upload PDFs, DOCX Files, Or Images</h2>
@@ -1338,55 +724,6 @@ export function QuizBuilderApp() {
           </label>
 
           <label className="field">
-            <span>Coverage Mode</span>
-            <select
-              value={settings.coverageMode}
-              onChange={(event) =>
-                setSettings((previous) => ({
-                  ...previous,
-                  coverageMode: event.target.value as CoverageMode
-                }))
-              }
-            >
-              <option value="coverage_first">Coverage First (cover everything)</option>
-              <option value="target_first">Target First (respect the count)</option>
-            </select>
-          </label>
-
-          <label className="field">
-            <span>Source Detail</span>
-            <select
-              value={settings.sourceDetail}
-              onChange={(event) =>
-                setSettings((previous) => ({
-                  ...previous,
-                  sourceDetail: event.target.value as SourceDetail
-                }))
-              }
-            >
-              <option value="full">Full Text (best for local AI)</option>
-              <option value="compressed">Compressed (best for copy/paste)</option>
-            </select>
-          </label>
-
-          <label className="field">
-            <span>Question Thinking Level</span>
-            <select
-              value={settings.cognitiveMix}
-              onChange={(event) =>
-                setSettings((previous) => ({
-                  ...previous,
-                  cognitiveMix: event.target.value as CognitiveMix
-                }))
-              }
-            >
-              <option value="balanced">Balanced Recall And Application</option>
-              <option value="application">Mostly Application And Analysis</option>
-              <option value="recall">Mostly Direct Recall</option>
-            </select>
-          </label>
-
-          <label className="field">
             <span>Topic Focus (Optional)</span>
             <input
               type="text"
@@ -1435,13 +772,7 @@ export function QuizBuilderApp() {
         <p className="muted">
           {PROMPT_DENSITY_PRESETS[settings.promptDensity].description} Current response format:{" "}
           {settings.responseFormat === "compact" ? "compact experimental mode" : "standard verbose mode"} with{" "}
-          {settings.optionCount} choices per question and {chunkOrderingLabel(settings.chunkOrdering)}.{" "}
-          {settings.coverageMode === "coverage_first"
-            ? "Coverage first treats the target count as a floor and raises it if needed so every source chunk produces at least one question."
-            : "Target first never exceeds your question count, and reports which source chunks went unused."}{" "}
-          {settings.sourceDetail === "full"
-            ? "Prompts carry the full chunk text, which needs a large context window."
-            : "Prompts carry a compressed summary of each chunk to stay copy/paste friendly."}
+          {settings.optionCount} choices per question and {chunkOrderingLabel(settings.chunkOrdering)}.
         </p>
 
         <div className="actions-row">
@@ -1459,16 +790,8 @@ export function QuizBuilderApp() {
         </div>
       </section>
 
-      <AiConnectionPanel
-        connection={connection}
-        state={aiState}
-        isBusy={isBusy || isAnyRunActive}
-        onChange={setConnection}
-        onTestConnection={onTestConnection}
-      />
-
       <section className="panel">
-        <h2>4) Processing Status</h2>
+        <h2>3) Processing Status</h2>
         <StageIndicator stage={stage} />
         <p className="status-line">{stageSummaryLabel(stage)}</p>
         <div
@@ -1485,7 +808,7 @@ export function QuizBuilderApp() {
 
       {result ? (
         <section className="panel">
-          <h2>5) Source Packet Summary</h2>
+          <h2>4) Source Packet Summary</h2>
           <p className="muted">
             Source files processed: {result.totalSourceFiles} | Readable pages/items: {result.totalPages} | Prompt
             chunks: {result.chunks.length}
@@ -1506,7 +829,7 @@ export function QuizBuilderApp() {
       ) : null}
 
       <section className="panel">
-        <h2>6) Prompt Queue</h2>
+        <h2>5) Prompt Queue</h2>
         <div className="instruction-box">
           <strong>How to use this queue:</strong>
           <ol>
@@ -1524,79 +847,6 @@ export function QuizBuilderApp() {
           <span>Completed prompts: {parsedBatchCount}</span>
           <span>Collected questions: {quiz?.questions.length ?? 0}</span>
         </div>
-
-        <div className="actions-row">
-          <button
-            type="button"
-            onClick={runAllPendingBatches}
-            disabled={isBusy || isAnyRunActive || !canUseAi || pendingBatchCount === 0}
-          >
-            {isAiRunning
-              ? "Generating..."
-              : `Generate All Questions With Local AI (${pendingBatchCount} prompt${pendingBatchCount === 1 ? "" : "s"})`}
-          </button>
-          {isAnyRunActive ? (
-            <button type="button" className="secondary" onClick={stopRun}>
-              Stop
-            </button>
-          ) : null}
-          {!canUseAi ? (
-            <span className="muted">
-              Connect a local model above to run the whole queue automatically, or work through it by hand below.
-            </span>
-          ) : null}
-        </div>
-
-        {aiRunLabel ? <div className="instruction-box">{aiRunLabel}</div> : null}
-
-        {pendingPlan ? (
-          <div className="error-box">
-            <strong>
-              Covering all your source needs {pendingPlan.coverage.plannedQuestionCount} questions, not the{" "}
-              {settings.targetQuestionCount} you asked for.
-            </strong>
-            <p className="muted">
-              Your source produced {pendingPlan.coverage.fullCoverageQuestionCount} chunks. Coverage-first mode gives
-              every chunk at least one question, so it wants{" "}
-              {pendingPlan.coverage.plannedQuestionCount} questions across {pendingPlan.coverage.batches.length}{" "}
-              prompts. Capping at your target runs {pendingPlan.capped.batches.length} prompt
-              {pendingPlan.capped.batches.length === 1 ? "" : "s"} instead and leaves{" "}
-              {pendingPlan.capped.droppedChunkCount} chunk
-              {pendingPlan.capped.droppedChunkCount === 1 ? "" : "s"} without a question. Pick whichever you actually
-              want — the difference is roughly{" "}
-              {Math.max(
-                1,
-                Math.round(pendingPlan.coverage.batches.length / Math.max(pendingPlan.capped.batches.length, 1))
-              )}
-              x the generation time.
-            </p>
-            <div className="actions-row">
-              <button
-                type="button"
-                onClick={() => {
-                  commitPlan(pendingPlan.coverage, "coverage_first");
-                  setStage("waiting_for_ai");
-                }}
-              >
-                Cover Everything ({pendingPlan.coverage.plannedQuestionCount} questions)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSettings((previous) => ({ ...previous, coverageMode: "target_first" }));
-                  commitPlan(
-                    pendingPlan.capped,
-                    "target_first",
-                    " Coverage mode switched to Target First, so this stays your default."
-                  );
-                  setStage("waiting_for_ai");
-                }}
-              >
-                Cap At {settings.targetQuestionCount}
-              </button>
-            </div>
-          </div>
-        ) : null}
 
         {promptBatches.length > 0 ? (
           <div className="batch-list">
@@ -1664,7 +914,7 @@ export function QuizBuilderApp() {
       </section>
 
       <section className="panel">
-        <h2>7) Paste Current Batch Response</h2>
+        <h2>6) Paste Current Batch Response</h2>
         {currentBatch ? (
           <p className="muted">
             Prompt {currentBatch.batchNumber} targets about {currentBatch.questionCount} questions with{" "}
@@ -1727,43 +977,10 @@ export function QuizBuilderApp() {
 
       {quiz ? (
         <>
-          <CoveragePanel
-            report={coverageReport}
-            canFillGaps={sourceChunks.length > 0}
-            isBusy={isBusy || isAnyRunActive}
-            onFillGaps={buildGapFillQueue}
-          />
-
-          <EnrichmentPanel
-            quiz={quiz}
-            chunks={sourceChunks}
-            isBusy={isEnriching}
-            canUseAi={canUseAi}
-            progressLabel={enrichmentLabel}
-            onRunAi={runEnrichment}
-            onApplyQuestions={applyReviewUpdates}
-            onStop={stopRun}
-          />
-
-          <AuditPanel
-            report={auditReport}
-            questionCount={quiz.questions.length}
-            isBusy={isBusy || isAnyRunActive}
-            canAutoFix={canUseAi}
-            onShowFlagged={() => setEditorFlaggedOnly(true)}
-            onAutoFix={runAutoFix}
-          />
-
-          <QuizEditor
-            quiz={quiz}
-            onChange={setQuiz}
-            flaggedIndexes={auditReport.flaggedIndexes}
-            flaggedOnly={editorFlaggedOnly}
-            onFlaggedOnlyChange={setEditorFlaggedOnly}
-          />
+          <QuizEditor quiz={quiz} onChange={setQuiz} />
 
           <section className="panel">
-            <h2>8) Export</h2>
+            <h2>7) Export</h2>
             <p className="muted">
               Export the merged question bank as structured data, or generate one standalone `.html` quiz file from the
               accumulated set.

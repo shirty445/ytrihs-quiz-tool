@@ -6,9 +6,6 @@ import type { QuizPayload, QuizQuestion } from "@/lib/types";
 interface QuizEditorProps {
   quiz: QuizPayload;
   onChange: (nextQuiz: QuizPayload) => void;
-  flaggedIndexes?: number[];
-  flaggedOnly?: boolean;
-  onFlaggedOnlyChange?: (next: boolean) => void;
 }
 
 function updateQuestion(
@@ -23,23 +20,8 @@ function updateQuestion(
   };
 }
 
-export function QuizEditor({
-  quiz,
-  onChange,
-  flaggedIndexes = [],
-  flaggedOnly = false,
-  onFlaggedOnlyChange
-}: QuizEditorProps) {
+export function QuizEditor({ quiz, onChange }: QuizEditorProps) {
   const [collapsed, setCollapsed] = useState(true);
-  const flagged = new Set(flaggedIndexes);
-  const showFlaggedOnly = flaggedOnly && flagged.size > 0;
-  const visibleQuestions = quiz.questions
-    .map((question, questionIndex) => ({ question, questionIndex }))
-    .filter(({ questionIndex }) => !showFlaggedOnly || flagged.has(questionIndex));
-
-  // The editor is collapsed by default, but a request to review flagged
-  // questions should open it rather than silently do nothing.
-  const isCollapsed = collapsed && !showFlaggedOnly;
 
   return (
     <section className="panel">
@@ -47,50 +29,21 @@ export function QuizEditor({
         <div>
           <h2>Quiz Review And Edit</h2>
           <p className="muted">
-            {isCollapsed
+            {collapsed
               ? `Collapsed by default. Expand only if you want to manually edit the merged ${quiz.questions.length}-question bank.`
               : "Review every field before exporting. You can edit wording, options, explanation, and source mapping."}
           </p>
         </div>
-        <div className="actions-row">
-          {flagged.size > 0 && onFlaggedOnlyChange ? (
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                onFlaggedOnlyChange(!flaggedOnly);
-                if (!flaggedOnly) {
-                  setCollapsed(false);
-                }
-              }}
-            >
-              {showFlaggedOnly ? `Show All ${quiz.questions.length}` : `Show ${flagged.size} Flagged`}
-            </button>
-          ) : null}
-          <button type="button" className="secondary" onClick={() => setCollapsed((previous) => !previous)}>
-            {isCollapsed ? "Expand Review" : "Collapse Review"}
-          </button>
-        </div>
+        <button type="button" className="secondary" onClick={() => setCollapsed((previous) => !previous)}>
+          {collapsed ? "Expand Review" : "Collapse Review"}
+        </button>
       </div>
 
-      {isCollapsed ? null : (
+      {collapsed ? null : (
         <div className="quiz-cards">
-          {visibleQuestions.map(({ question, questionIndex }) => (
-            <article
-              key={`q-${questionIndex}`}
-              className={`quiz-card${flagged.has(questionIndex) ? " is-flagged" : ""}`}
-            >
-              <h3>
-                Question {questionIndex + 1}
-                {flagged.has(questionIndex) ? " (flagged)" : ""}
-              </h3>
-
-              {!question.options.includes(question.correctAnswer) ? (
-                <div className="error-box">
-                  The correct answer no longer matches any option, so this question can never be answered
-                  correctly. Pick the right option below.
-                </div>
-              ) : null}
+          {quiz.questions.map((question, questionIndex) => (
+            <article key={`q-${questionIndex}`} className="quiz-card">
+              <h3>Question {questionIndex + 1}</h3>
               <label className="field">
                 <span>Question</span>
                 <textarea
@@ -118,16 +71,10 @@ export function QuizEditor({
                         onChange(
                           updateQuestion(quiz, questionIndex, (current) => {
                             const nextOptions = [...current.options];
-                            const previousValue = nextOptions[optionIndex];
                             nextOptions[optionIndex] = event.target.value;
-
                             return {
                               ...current,
-                              options: nextOptions,
-                              correctAnswer:
-                                current.correctAnswer === previousValue
-                                  ? event.target.value
-                                  : current.correctAnswer
+                              options: nextOptions
                             };
                           })
                         )
